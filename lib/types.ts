@@ -46,3 +46,21 @@ export type Schedule = {
   enabled: boolean;
   created_at: string;
 };
+
+export type RunStatus = "ok" | "blocked" | "error";
+
+export const RUN_STATUS_LABELS: Record<RunStatus, string> = {
+  ok: "成功",
+  blocked: "ブロック",
+  error: "失敗",
+};
+
+export const RUN_STATUSES: RunStatus[] = ["ok", "blocked", "error"];
+
+export type Run = {
+  id: string;
+  schedule_id: string;
+  run_at: string;
+  status: RunStatus;
+  exit_ip: string | null;
+};

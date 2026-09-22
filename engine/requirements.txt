@@ -1,0 +1,5 @@
+# nodriver は 0.48 以降 cdp/network.py に非UTF-8バイトが混入しており
+# import 自体が SyntaxError になる。健全な最新版である 0.47.0 に固定する。
+nodriver==0.47.0
+supabase==2.31.0
+python-dotenv==1.2.3

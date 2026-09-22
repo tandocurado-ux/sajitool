@@ -12,9 +12,25 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen flex-col bg-neutral-50">
       <header className="border-b border-neutral-200 bg-white">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-3">
-          <Link href="/clients" className="text-sm font-semibold text-neutral-900">
-            サジェツール
-          </Link>
+          <div className="flex items-center gap-5">
+            <Link href="/clients" className="text-sm font-semibold text-neutral-900">
+              サジェツール
+            </Link>
+            <nav className="flex items-center gap-4">
+              <Link
+                href="/dashboard"
+                className="text-sm text-neutral-600 underline-offset-4 hover:text-neutral-900 hover:underline"
+              >
+                ダッシュボード
+              </Link>
+              <Link
+                href="/clients"
+                className="text-sm text-neutral-600 underline-offset-4 hover:text-neutral-900 hover:underline"
+              >
+                顧客
+              </Link>
+            </nav>
+          </div>
           <div className="flex items-center gap-3">
             <span className="hidden text-xs text-neutral-500 sm:inline">
               {user.email}
