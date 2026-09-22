@@ -13,7 +13,7 @@ import { AddScheduleForm } from "@/components/add-schedule-form";
 import { ScheduleToggle } from "@/components/schedule-toggle";
 import { DeleteButton } from "@/components/delete-button";
 import { RunStatusBadge } from "@/components/run-status-badge";
-import { cardClass } from "@/components/ui";
+import { cardClass, primaryButtonClass } from "@/components/ui";
 import {
   groupRunsByScheduleId,
   listRunsByScheduleIds,
@@ -23,13 +23,19 @@ import { formatTime } from "@/lib/parse";
 import {
   formatRate,
   formatRunAt,
+  formatRunAtShort,
   hoursAgo,
   isSince,
   summarizeRuns,
 } from "@/lib/runs";
-import { DEVICE_LABELS, PLATFORM_LABELS } from "@/lib/types";
+import {
+  DEVICE_LABELS,
+  PLATFORM_LABELS,
+  type Device,
+  type Platform,
+} from "@/lib/types";
 
-const TABS = ["keywords", "regions", "schedules", "runs"] as const;
+const TABS = ["keywords", "regions", "schedules", "runs", "matrix"] as const;
 type Tab = (typeof TABS)[number];
 
 const TAB_LABELS: Record<Tab, string> = {
@@ -37,7 +43,23 @@ const TAB_LABELS: Record<Tab, string> = {
   regions: "地域",
   schedules: "スケジュール",
   runs: "実行履歴",
+  matrix: "地域比較",
 };
+
+const PLATFORM_FILTERS: Platform[] = ["google", "yahoo"];
+const DEVICE_FILTERS: Device[] = ["pc", "mobile"];
+
+function normalizePlatform(raw: string | string[] | undefined): Platform {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return PLATFORM_FILTERS.includes(value as Platform)
+    ? (value as Platform)
+    : "google";
+}
+
+function normalizeDevice(raw: string | string[] | undefined): Device {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return DEVICE_FILTERS.includes(value as Device) ? (value as Device) : "pc";
+}
 
 /** 実行履歴タブで各スケジュールに出す直近実行の件数。 */
 const RECENT_RUNS_PER_SCHEDULE = 5;
@@ -51,7 +73,10 @@ export default async function ClientDetailPage(
   props: PageProps<"/clients/[id]">,
 ) {
   const { id } = await props.params;
-  const activeTab = normalizeTab((await props.searchParams).tab);
+  const searchParams = await props.searchParams;
+  const activeTab = normalizeTab(searchParams.tab);
+  const platformFilter = normalizePlatform(searchParams.platform);
+  const deviceFilter = normalizeDevice(searchParams.device);
 
   const client = await getClientById(id);
   if (!client) notFound();
@@ -69,19 +94,32 @@ export default async function ClientDetailPage(
   // 7日分は成功率の計算用、直近分は「最後にいつ何が起きたか」を出すため。
   const [weekRuns, recentRuns] = await Promise.all([
     listRunsByScheduleIds(scheduleIds, { since: since7d }),
-    listRunsByScheduleIds(scheduleIds, { limit: 60 }),
+    listRunsByScheduleIds(scheduleIds, { limit: 300 }),
   ]);
   const runsBySchedule = groupRunsByScheduleId(mergeRuns(weekRuns, recentRuns));
 
   const keywordById = new Map(keywords.map((keyword) => [keyword.id, keyword]));
   const regionById = new Map(regions.map((region) => [region.id, region]));
 
-  const counts: Record<Tab, number> = {
+  const counts: Partial<Record<Tab, number>> = {
     keywords: keywords.length,
     regions: regions.length,
     schedules: schedules.length,
     runs: weekRuns.length,
   };
+
+  // 地域比較タブ: 行=キーワード、列=地域。platform と device で1枚に絞る。
+  const matrixKeywords = keywords.filter(
+    (keyword) => keyword.platform === platformFilter,
+  );
+  const scheduleByPair = new Map(
+    schedules
+      .filter((schedule) => schedule.device === deviceFilter)
+      .map((schedule) => [
+        `${schedule.keyword_id}|${schedule.region_id}`,
+        schedule,
+      ]),
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -92,9 +130,12 @@ export default async function ClientDetailPage(
         >
           ← 顧客一覧へ戻る
         </Link>
-        <h1 className="mt-2 text-xl font-semibold text-neutral-900">
-          {client.name}
-        </h1>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-xl font-semibold text-neutral-900">{client.name}</h1>
+          <Link href={`/clients/${id}/setup`} className={primaryButtonClass}>
+            まとめて登録
+          </Link>
+        </div>
       </div>
 
       <nav className="flex gap-1 border-b border-neutral-200">
@@ -108,7 +149,8 @@ export default async function ClientDetailPage(
                 : "border-transparent text-neutral-500 hover:text-neutral-800"
             }`}
           >
-            {TAB_LABELS[tab]}（{counts[tab]}）
+            {TAB_LABELS[tab]}
+            {counts[tab] === undefined ? "" : `（${counts[tab]}）`}
           </Link>
         ))}
       </nav>
@@ -373,6 +415,127 @@ export default async function ClientDetailPage(
                 );
               })}
             </ul>
+          )}
+        </section>
+      ) : null}
+
+      {activeTab === "matrix" ? (
+        <section className={cardClass}>
+          <h2 className="text-sm font-semibold text-neutral-900">
+            キーワード × 地域
+          </h2>
+          <p className="mt-1 text-xs text-neutral-500">
+            セルは直近の実行結果です。どの地域が未実行・ブロックかを一覧できます。
+          </p>
+
+          <div className="mt-3 flex flex-wrap gap-6">
+            <div>
+              <span className="mb-1 block text-xs font-medium text-neutral-600">
+                検索エンジン
+              </span>
+              <div className="flex gap-1">
+                {PLATFORM_FILTERS.map((platform) => (
+                  <Link
+                    key={platform}
+                    href={`/clients/${id}?tab=matrix&platform=${platform}&device=${deviceFilter}`}
+                    className={`rounded border px-3 py-1 text-xs font-medium ${
+                      platform === platformFilter
+                        ? "border-neutral-900 bg-neutral-900 text-white"
+                        : "border-neutral-300 text-neutral-700 hover:bg-neutral-100"
+                    }`}
+                  >
+                    {PLATFORM_LABELS[platform]}
+                  </Link>
+                ))}
+              </div>
+            </div>
+            <div>
+              <span className="mb-1 block text-xs font-medium text-neutral-600">
+                デバイス
+              </span>
+              <div className="flex gap-1">
+                {DEVICE_FILTERS.map((device) => (
+                  <Link
+                    key={device}
+                    href={`/clients/${id}?tab=matrix&platform=${platformFilter}&device=${device}`}
+                    className={`rounded border px-3 py-1 text-xs font-medium ${
+                      device === deviceFilter
+                        ? "border-neutral-900 bg-neutral-900 text-white"
+                        : "border-neutral-300 text-neutral-700 hover:bg-neutral-100"
+                    }`}
+                  >
+                    {DEVICE_LABELS[device]}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {matrixKeywords.length === 0 || regions.length === 0 ? (
+            <p className="mt-4 text-sm text-neutral-500">
+              {PLATFORM_LABELS[platformFilter]} のキーワードと地域が揃うと表示されます。
+            </p>
+          ) : (
+            <div className="mt-4 overflow-x-auto">
+              <table className="min-w-full border-collapse text-left text-sm">
+                <thead>
+                  <tr>
+                    <th className="sticky left-0 z-10 border-b border-neutral-200 bg-white py-2 pr-4 text-xs font-medium text-neutral-500">
+                      キーワード
+                    </th>
+                    {regions.map((region) => (
+                      <th
+                        key={region.id}
+                        className="border-b border-neutral-200 px-3 py-2 text-xs font-medium text-neutral-500"
+                      >
+                        {region.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-200">
+                  {matrixKeywords.map((keyword) => (
+                    <tr key={keyword.id}>
+                      <th className="sticky left-0 z-10 bg-white py-2 pr-4 text-left text-sm font-medium text-neutral-900">
+                        {keyword.keyword}
+                      </th>
+                      {regions.map((region) => {
+                        const schedule = scheduleByPair.get(
+                          `${keyword.id}|${region.id}`,
+                        );
+                        const latestRun = schedule
+                          ? (runsBySchedule.get(schedule.id) ?? [])[0]
+                          : undefined;
+
+                        return (
+                          <td
+                            key={region.id}
+                            className="whitespace-nowrap px-3 py-2 align-top"
+                          >
+                            {!schedule ? (
+                              <span className="text-xs text-neutral-400">
+                                未登録
+                              </span>
+                            ) : !latestRun ? (
+                              <span className="text-xs text-neutral-500">
+                                未実行
+                              </span>
+                            ) : (
+                              <span className="flex flex-col gap-1">
+                                <RunStatusBadge status={latestRun.status} />
+                                <span className="text-xs text-neutral-500">
+                                  {formatRunAtShort(latestRun.run_at)}
+                                </span>
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
       ) : null}

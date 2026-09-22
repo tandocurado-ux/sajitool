@@ -1,86 +1,48 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState, useState } from "react";
 import { addRegion } from "@/server/regions/actions";
 import { initialActionState } from "@/lib/action-state";
 import { FormError } from "./form-error";
-import { inputClass, labelClass, primaryButtonClass } from "./ui";
+import {
+  RegionPicker,
+  emptyRegionDraft,
+  isRegionDraftFilled,
+  type RegionDraft,
+} from "./region-picker";
+import { primaryButtonClass } from "./ui";
 
 export function AddRegionForm({ clientId }: { clientId: string }) {
   const [state, formAction, pending] = useActionState(addRegion, initialActionState);
-  const formRef = useRef<HTMLFormElement>(null);
+  const [draft, setDraft] = useState<RegionDraft>(emptyRegionDraft());
 
-  useEffect(() => {
-    if (!state.error) formRef.current?.reset();
-  }, [state]);
+  // 登録に成功したら入力を空に戻す。
+  // effect ではなくレンダー中に前回値と比べて調整する（余計な再レンダーを挟まない）。
+  const [handledState, setHandledState] = useState(state);
+  if (handledState !== state) {
+    setHandledState(state);
+    if (!state.error) setDraft(emptyRegionDraft());
+  }
 
   return (
-    <form ref={formRef} action={formAction} className="flex flex-col gap-3">
+    <form action={formAction} className="flex flex-col gap-3">
       <input type="hidden" name="client_id" value={clientId} />
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="sm:col-span-3">
-          <label htmlFor="label" className={labelClass}>
-            ラベル（必須）
-          </label>
-          <input
-            id="label"
-            name="label"
-            type="text"
-            required
-            maxLength={100}
-            placeholder="例: 名古屋市中区"
-            className={inputClass}
-          />
-        </div>
-        <div>
-          <label htmlFor="prefecture" className={labelClass}>
-            都道府県
-          </label>
-          <input
-            id="prefecture"
-            name="prefecture"
-            type="text"
-            placeholder="愛知県"
-            className={inputClass}
-          />
-        </div>
-        <div>
-          <label htmlFor="city" className={labelClass}>
-            市区町村
-          </label>
-          <input id="city" name="city" type="text" placeholder="名古屋市中区" className={inputClass} />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label htmlFor="lat" className={labelClass}>
-              緯度
-            </label>
-            <input
-              id="lat"
-              name="lat"
-              type="text"
-              inputMode="decimal"
-              placeholder="35.1681"
-              className={inputClass}
-            />
-          </div>
-          <div>
-            <label htmlFor="lng" className={labelClass}>
-              経度
-            </label>
-            <input
-              id="lng"
-              name="lng"
-              type="text"
-              inputMode="decimal"
-              placeholder="136.9066"
-              className={inputClass}
-            />
-          </div>
-        </div>
-      </div>
+      <input type="hidden" name="prefecture" value={draft.prefecture} />
+      <input type="hidden" name="city" value={draft.city} />
+      <input type="hidden" name="label" value={draft.label} />
+
+      <RegionPicker
+        draft={draft}
+        onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))}
+        idPrefix="add-region"
+      />
+
       <div>
-        <button type="submit" disabled={pending} className={primaryButtonClass}>
+        <button
+          type="submit"
+          disabled={pending || !isRegionDraftFilled(draft)}
+          className={primaryButtonClass}
+        >
           {pending ? "追加中…" : "地域を追加"}
         </button>
       </div>

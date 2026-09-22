@@ -1,4 +1,5 @@
 import type { ParseResult } from "@/lib/parse";
+import { buildRegionLabel, findMunicipality, japanRangeWarning } from "@/lib/japan";
 
 export type RegionInput = {
   client_id: string;
@@ -9,53 +10,61 @@ export type RegionInput = {
   lng: number | null;
 };
 
-function parseCoordinate(
-  raw: string,
-  fieldLabel: string,
-  min: number,
-  max: number,
-): ParseResult<number | null> {
-  const value = raw.trim();
-  if (!value) return { ok: true, data: null };
+/**
+ * 都道府県 + 市区町村から地域を1件組み立てる。
+ *
+ * 緯度経度は市区町村の代表点から引くので手入力を受け付けない。
+ * 手入力だった頃に経度の桁を打ち間違えても気づけない事故があったため。
+ */
+export function buildRegionInput(
+  clientId: string,
+  prefecture: string,
+  city: string,
+  label: string,
+): ParseResult<RegionInput> {
+  if (!prefecture) return { ok: false, error: "都道府県を選択してください。" };
+  if (!city) return { ok: false, error: "市区町村を選択してください。" };
 
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return { ok: false, error: `${fieldLabel}は数値で入力してください。` };
+  const municipality = findMunicipality(prefecture, city);
+  if (!municipality) {
+    return {
+      ok: false,
+      error: `市区町村が見つかりません: ${prefecture} ${city}`,
+    };
   }
-  if (parsed < min || parsed > max) {
-    return { ok: false, error: `${fieldLabel}は ${min} 〜 ${max} の範囲で入力してください。` };
+
+  const resolvedLabel = label.trim() || buildRegionLabel(prefecture, city);
+  if (resolvedLabel.length > 100) {
+    return { ok: false, error: "地域名は100文字以内で入力してください。" };
   }
-  return { ok: true, data: parsed };
+
+  // 代表点データ由来なので通常は出ない。データ生成ミスに備えた最終チェック。
+  const warning = japanRangeWarning(municipality.lat, municipality.lng);
+  if (warning) {
+    return { ok: false, error: `${resolvedLabel}: ${warning}` };
+  }
+
+  return {
+    ok: true,
+    data: {
+      client_id: clientId,
+      label: resolvedLabel,
+      prefecture,
+      city,
+      lat: municipality.lat,
+      lng: municipality.lng,
+    },
+  };
 }
 
 export function parseRegionInput(formData: FormData): ParseResult<RegionInput> {
   const clientId = String(formData.get("client_id") ?? "").trim();
   if (!clientId) return { ok: false, error: "顧客が指定されていません。" };
 
-  const label = String(formData.get("label") ?? "").trim();
-  if (!label) return { ok: false, error: "地域名（ラベル）を入力してください。" };
-  if (label.length > 100) {
-    return { ok: false, error: "地域名は100文字以内で入力してください。" };
-  }
-
-  const lat = parseCoordinate(String(formData.get("lat") ?? ""), "緯度", -90, 90);
-  if (!lat.ok) return lat;
-
-  const lng = parseCoordinate(String(formData.get("lng") ?? ""), "経度", -180, 180);
-  if (!lng.ok) return lng;
-
-  const prefecture = String(formData.get("prefecture") ?? "").trim();
-  const city = String(formData.get("city") ?? "").trim();
-
-  return {
-    ok: true,
-    data: {
-      client_id: clientId,
-      label,
-      prefecture: prefecture || null,
-      city: city || null,
-      lat: lat.data,
-      lng: lng.data,
-    },
-  };
+  return buildRegionInput(
+    clientId,
+    String(formData.get("prefecture") ?? "").trim(),
+    String(formData.get("city") ?? "").trim(),
+    String(formData.get("label") ?? ""),
+  );
 }

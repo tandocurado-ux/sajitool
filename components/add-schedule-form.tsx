@@ -1,10 +1,11 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { addSchedule } from "@/server/schedules/actions";
 import { initialActionState } from "@/lib/action-state";
 import { PLATFORM_LABELS, type Keyword, type Region } from "@/lib/types";
 import { FormError } from "./form-error";
+import { TimePicker } from "./time-picker";
 import { inputClass, labelClass, primaryButtonClass } from "./ui";
 
 type Props = {
@@ -15,10 +16,18 @@ type Props = {
 export function AddScheduleForm({ keywords, regions }: Props) {
   const [state, formAction, pending] = useActionState(addSchedule, initialActionState);
   const formRef = useRef<HTMLFormElement>(null);
+  const [times, setTimes] = useState<string[]>(["09:00"]);
 
   useEffect(() => {
     if (!state.error) formRef.current?.reset();
   }, [state]);
+
+  // 時刻は制御されているので、レンダー中に前回値と比べて戻す。
+  const [handledState, setHandledState] = useState(state);
+  if (handledState !== state) {
+    setHandledState(state);
+    if (!state.error) setTimes(["09:00"]);
+  }
 
   if (keywords.length === 0 || regions.length === 0) {
     return (
@@ -56,17 +65,7 @@ export function AddScheduleForm({ keywords, regions }: Props) {
           </select>
         </div>
         <div>
-          <label htmlFor="times" className={labelClass}>
-            計測時刻（HH:MM、カンマ区切りで複数可）
-          </label>
-          <input
-            id="times"
-            name="times"
-            type="text"
-            required
-            placeholder="09:00, 12:00, 18:00"
-            className={inputClass}
-          />
+          <TimePicker name="times" times={times} onChange={setTimes} />
         </div>
         <div>
           <label htmlFor="device" className={labelClass}>
@@ -79,7 +78,11 @@ export function AddScheduleForm({ keywords, regions }: Props) {
         </div>
       </div>
       <div>
-        <button type="submit" disabled={pending} className={primaryButtonClass}>
+        <button
+          type="submit"
+          disabled={pending || times.length === 0}
+          className={primaryButtonClass}
+        >
           {pending ? "追加中…" : "スケジュールを追加"}
         </button>
       </div>

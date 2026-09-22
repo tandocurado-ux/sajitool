@@ -37,3 +37,38 @@ export function parseTimes(raw: string): ParseResult<string[]> {
 export function formatTime(value: string): string {
   return value.slice(0, 5);
 }
+
+/** テキストエリアの1行1キーワードを配列にする。空行と重複は落とす。 */
+export function parseKeywordLines(raw: string): string[] {
+  const seen = new Set<string>();
+  const keywords: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const keyword = line.trim();
+    if (!keyword || seen.has(keyword)) continue;
+    seen.add(keyword);
+    keywords.push(keyword);
+  }
+  return keywords;
+}
+
+/** 空文字なら null、数値でなければエラー。 */
+export function parseOptionalNumber(
+  raw: string,
+  fieldLabel: string,
+): ParseResult<number | null> {
+  const value = raw.trim();
+  if (!value) return { ok: true, data: null };
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return { ok: false, error: `${fieldLabel}は数値で入力してください。` };
+  }
+  return { ok: true, data: parsed };
+}
+
+/** 00:00〜23:45 の15分刻み（96択）。 */
+export const TIME_OPTIONS: string[] = Array.from({ length: 96 }, (_, index) => {
+  const hour = Math.floor(index / 4);
+  const minute = (index % 4) * 15;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+});

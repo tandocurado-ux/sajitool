@@ -68,3 +68,18 @@ export function isSince(run: Run, since: Date): boolean {
   const parsed = parseRunAt(run.run_at);
   return !Number.isNaN(parsed.getTime()) && parsed >= since;
 }
+
+const shortFormatter = new Intl.DateTimeFormat("ja-JP", {
+  timeZone: "Asia/Tokyo",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/** マトリクスのセルなど、幅が取れない場所向けの短い表記。 */
+export function formatRunAtShort(value: string): string {
+  const parsed = parseRunAt(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return shortFormatter.format(parsed);
+}
