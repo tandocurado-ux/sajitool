@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getDashboardOverview } from "@/server/runs/queries";
+import { getClientsOverview } from "@/server/clients/queries";
 import { RunStatusBadge } from "@/components/run-status-badge";
 import { cardClass } from "@/components/ui";
 import { formatRate, formatRunAt, type RunSummary } from "@/lib/runs";
@@ -55,17 +56,110 @@ function SummaryCard({ title, summary }: { title: string; summary: RunSummary })
   );
 }
 
-export default async function DashboardPage() {
+const TABS = ["summary", "matrix"] as const;
+type DashboardTab = (typeof TABS)[number];
+
+const TAB_LABELS: Record<DashboardTab, string> = {
+  summary: "ホーム",
+  matrix: "地域比較",
+};
+
+function normalizeTab(raw: string | string[] | undefined): DashboardTab {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return TABS.includes(value as DashboardTab) ? (value as DashboardTab) : "summary";
+}
+
+export default async function DashboardPage(props: PageProps<"/dashboard">) {
+  const tab = normalizeTab((await props.searchParams).tab);
+
+  if (tab === "matrix") {
+    // 地域比較は顧客ごとの表なので、ここでは顧客を選ばせる。
+    const clients = await getClientsOverview();
+    return (
+      <div className="flex flex-col gap-6">
+        <div>
+          <h1 className="text-xl font-semibold text-neutral-900">地域比較</h1>
+          <p className="mt-1 text-sm text-neutral-500">
+            キーワード × 地域の実行状況を見る顧客を選んでください。
+          </p>
+        </div>
+
+        <nav className="flex gap-1 border-b border-neutral-200">
+          {TABS.map((name) => (
+            <Link
+              key={name}
+              href={name === "summary" ? "/dashboard" : `/dashboard?tab=${name}`}
+              className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+                name === tab
+                  ? "border-neutral-900 text-neutral-900"
+                  : "border-transparent text-neutral-500 hover:text-neutral-800"
+              }`}
+            >
+              {TAB_LABELS[name]}
+            </Link>
+          ))}
+        </nav>
+
+        <section className={cardClass}>
+          {clients.length === 0 ? (
+            <p className="text-sm text-neutral-500">まだ顧客が登録されていません。</p>
+          ) : (
+            <ul className="divide-y divide-neutral-200">
+              {clients.map((row) => (
+                <li
+                  key={row.client.id}
+                  className="flex flex-wrap items-center justify-between gap-3 py-3"
+                >
+                  <div>
+                    <p className="text-sm font-medium text-neutral-900">
+                      {row.client.name}
+                    </p>
+                    <p className="text-xs text-neutral-500">
+                      キーワード {row.keywordCount} 件 ／ 地域 {row.regionCount} 件 ／
+                      スケジュール {row.enabledScheduleCount} / {row.scheduleCount}
+                    </p>
+                  </div>
+                  <Link
+                    href={`/clients/${row.client.id}?tab=matrix`}
+                    className="text-sm text-neutral-900 underline underline-offset-4"
+                  >
+                    地域比較を開く
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+    );
+  }
+
   const overview = await getDashboardOverview();
 
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-neutral-900">ダッシュボード</h1>
+        <h1 className="text-xl font-semibold text-neutral-900">ホーム</h1>
         <p className="mt-1 text-sm text-neutral-500">
           計測エンジンの実行状況をまとめて確認できます。
         </p>
       </div>
+
+      <nav className="flex gap-1 border-b border-neutral-200">
+        {TABS.map((name) => (
+          <Link
+            key={name}
+            href={name === "summary" ? "/dashboard" : `/dashboard?tab=${name}`}
+            className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+              name === tab
+                ? "border-neutral-900 text-neutral-900"
+                : "border-transparent text-neutral-500 hover:text-neutral-800"
+            }`}
+          >
+            {TAB_LABELS[name]}
+          </Link>
+        ))}
+      </nav>
 
       {overview.warning ? (
         <div

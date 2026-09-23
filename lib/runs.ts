@@ -83,3 +83,17 @@ export function formatRunAtShort(value: string): string {
   if (Number.isNaN(parsed.getTime())) return value;
   return shortFormatter.format(parsed);
 }
+
+const dateKeyFormatter = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "Asia/Tokyo",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** JST での「YYYY-MM-DD」。当日判定に使う。 */
+export function jstDateKey(value: string | Date): string {
+  const parsed = typeof value === "string" ? parseRunAt(value) : value;
+  if (Number.isNaN(parsed.getTime())) return "";
+  return dateKeyFormatter.format(parsed);
+}

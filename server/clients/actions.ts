@@ -1,31 +1,66 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getUserFrom } from "@/server/auth/queries";
 import { parseId } from "@/lib/parse";
 import type { ActionState } from "@/lib/action-state";
-import { parseClientInput, parseClientRename } from "./schema";
+import { applyBulkSetup } from "@/server/setup/apply";
+import { parseNewClientSetup } from "@/server/setup/schema";
+import {
+  initialNewClientState,
+  parseClientRename,
+  type NewClientState,
+} from "./schema";
 
-export async function addClient(
-  _prevState: ActionState,
+export async function createClientWithSetup(
+  _prevState: NewClientState,
   formData: FormData,
-): Promise<ActionState> {
-  const parsed = parseClientInput(formData);
-  if (!parsed.ok) return { error: parsed.error };
+): Promise<NewClientState> {
+  const parsed = parseNewClientSetup(formData);
+  if (!parsed.ok) return { ...initialNewClientState, error: parsed.error };
+  const { name, setup, warnings } = parsed.data;
 
   const supabase = await createSupabaseServerClient();
   const user = await getUserFrom(supabase);
-  if (!user) return { error: "ログインが必要です。" };
+  if (!user) {
+    return { ...initialNewClientState, warnings, error: "ログインが必要です。" };
+  }
 
-  const { error } = await supabase
+  const created = await supabase
     .from("clients")
-    .insert({ name: parsed.data.name, user_id: user.id });
+    .insert({ name, user_id: user.id })
+    .select("id");
 
-  if (error) return { error: `顧客の追加に失敗しました: ${error.message}` };
+  if (created.error || !created.data?.[0]) {
+    return {
+      ...initialNewClientState,
+      warnings,
+      error: `顧客の作成に失敗しました: ${created.error?.message ?? "不明なエラー"}`,
+    };
+  }
+  const clientId = String(created.data[0].id);
+
+  // キーワードも地域も無ければ顧客だけ作って終わり（あとから追加できる）。
+  if (setup) {
+    const result = await applyBulkSetup(supabase, { ...setup, client_id: clientId });
+    if (!result.ok) {
+      revalidatePath("/clients");
+      revalidatePath(`/clients/${clientId}`);
+      return {
+        error: result.error,
+        warnings,
+        summary: null,
+        progress: result.progress,
+        createdClientId: clientId,
+      };
+    }
+  }
 
   revalidatePath("/clients");
-  return { error: null };
+  revalidatePath(`/clients/${clientId}`);
+  redirect(`/clients/${clientId}`);
 }
 
 export async function removeClient(

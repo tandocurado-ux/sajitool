@@ -12,6 +12,7 @@ import {
   japanRangeWarning,
 } from "@/lib/japan";
 import type { Device, Platform } from "@/lib/types";
+import { parseClientInput } from "@/server/clients/schema";
 
 export type PlatformMode = "google" | "yahoo" | "both";
 export type DeviceMode = "pc" | "mobile" | "both";
@@ -163,24 +164,19 @@ function parseNewRegions(
   return { ok: true, data: { regions, warnings } };
 }
 
-export function parseBulkSetupInput(
+export type ScheduleSettings = {
+  platforms: Platform[];
+  devices: Device[];
+  timeMode: TimeMode;
+  times: string[];
+  spreadSlots: string[];
+  rotations: number;
+};
+
+/** 検索エンジン・デバイス・時刻の設定。2つの画面で同じ入力欄を使う。 */
+export function parseScheduleSettings(
   formData: FormData,
-): ParseResult<BulkSetupParsed> {
-  const clientId = String(formData.get("client_id") ?? "").trim();
-  if (!clientId) return { ok: false, error: "顧客が指定されていません。" };
-
-  const keywords = parseKeywordLines(String(formData.get("keywords") ?? ""));
-  if (keywords.length === 0) {
-    return { ok: false, error: "キーワードを1行に1つずつ入力してください。" };
-  }
-  const tooLong = keywords.find((keyword) => keyword.length > 200);
-  if (tooLong) {
-    return {
-      ok: false,
-      error: `キーワードは200文字以内で入力してください: ${tooLong.slice(0, 30)}…`,
-    };
-  }
-
+): ParseResult<ScheduleSettings> {
   const platformMode = String(formData.get("platform_mode") ?? "") as PlatformMode;
   if (!PLATFORM_MODES.includes(platformMode)) {
     return { ok: false, error: "検索エンジンを選択してください。" };
@@ -221,6 +217,40 @@ export function parseBulkSetupInput(
     }
   }
 
+  return {
+    ok: true,
+    data: {
+      platforms: platformsFor(platformMode),
+      devices: devicesFor(deviceMode),
+      timeMode,
+      times,
+      spreadSlots,
+      rotations,
+    },
+  };
+}
+
+/** キーワード欄。空を許すかは呼び出し側が決める。 */
+export function parseKeywordsField(formData: FormData): ParseResult<string[]> {
+  const keywords = parseKeywordLines(String(formData.get("keywords") ?? ""));
+  const tooLong = keywords.find((keyword) => keyword.length > 200);
+  if (tooLong) {
+    return {
+      ok: false,
+      error: `キーワードは200文字以内で入力してください: ${tooLong.slice(0, 30)}…`,
+    };
+  }
+  return { ok: true, data: keywords };
+}
+
+export type RegionsField = {
+  regionIds: string[];
+  newRegions: NewRegionDraft[];
+  warnings: string[];
+};
+
+/** 既存地域の選択と、新しく足す地域。空を許すかは呼び出し側が決める。 */
+export function parseRegionsField(formData: FormData): ParseResult<RegionsField> {
   const regionIds = formData
     .getAll("region_ids")
     .map((value) => String(value).trim())
@@ -229,7 +259,34 @@ export function parseBulkSetupInput(
   const newRegions = parseNewRegions(String(formData.get("new_regions") ?? ""));
   if (!newRegions.ok) return newRegions;
 
-  if (regionIds.length === 0 && newRegions.data.regions.length === 0) {
+  return {
+    ok: true,
+    data: {
+      regionIds,
+      newRegions: newRegions.data.regions,
+      warnings: newRegions.data.warnings,
+    },
+  };
+}
+
+export function parseBulkSetupInput(
+  formData: FormData,
+): ParseResult<BulkSetupParsed> {
+  const clientId = String(formData.get("client_id") ?? "").trim();
+  if (!clientId) return { ok: false, error: "顧客が指定されていません。" };
+
+  const keywords = parseKeywordsField(formData);
+  if (!keywords.ok) return keywords;
+  if (keywords.data.length === 0) {
+    return { ok: false, error: "キーワードを1行に1つずつ入力してください。" };
+  }
+
+  const settings = parseScheduleSettings(formData);
+  if (!settings.ok) return settings;
+
+  const regions = parseRegionsField(formData);
+  if (!regions.ok) return regions;
+  if (regions.data.regionIds.length === 0 && regions.data.newRegions.length === 0) {
     return {
       ok: false,
       error: "地域を1つ以上選ぶか、新しい地域を追加してください。",
@@ -241,17 +298,77 @@ export function parseBulkSetupInput(
     data: {
       input: {
         client_id: clientId,
-        keywords,
-        platforms: platformsFor(platformMode),
-        regionIds,
-        newRegions: newRegions.data.regions,
-        timeMode,
-        times,
-        spreadSlots,
-        rotations,
-        devices: devicesFor(deviceMode),
+        keywords: keywords.data,
+        platforms: settings.data.platforms,
+        regionIds: regions.data.regionIds,
+        newRegions: regions.data.newRegions,
+        timeMode: settings.data.timeMode,
+        times: settings.data.times,
+        spreadSlots: settings.data.spreadSlots,
+        rotations: settings.data.rotations,
+        devices: settings.data.devices,
       },
-      warnings: newRegions.data.warnings,
+      warnings: regions.data.warnings,
+    },
+  };
+}
+
+export type NewClientParsed = {
+  name: string;
+  /** キーワードも地域も無ければ null（顧客だけ作る）。 */
+  setup: Omit<BulkSetupInput, "client_id"> | null;
+  warnings: string[];
+};
+
+/**
+ * 新規顧客ページの入力。店舗名だけでも成立する。
+ *
+ * 時刻・デバイスの設定はキーワードか地域がある場合だけ見る
+ * （何も足さないなら時刻を選ぶ意味がないため）。
+ */
+export function parseNewClientSetup(
+  formData: FormData,
+): ParseResult<NewClientParsed> {
+  const client = parseClientInput(formData);
+  if (!client.ok) return client;
+
+  const keywords = parseKeywordsField(formData);
+  if (!keywords.ok) return keywords;
+
+  const regions = parseRegionsField(formData);
+  if (!regions.ok) return regions;
+
+  const hasAnything =
+    keywords.data.length > 0 ||
+    regions.data.regionIds.length > 0 ||
+    regions.data.newRegions.length > 0;
+
+  if (!hasAnything) {
+    return {
+      ok: true,
+      data: { name: client.data.name, setup: null, warnings: [] },
+    };
+  }
+
+  const settings = parseScheduleSettings(formData);
+  if (!settings.ok) return settings;
+
+  return {
+    ok: true,
+    data: {
+      name: client.data.name,
+      setup: {
+        keywords: keywords.data,
+        platforms: settings.data.platforms,
+        regionIds: regions.data.regionIds,
+        newRegions: regions.data.newRegions,
+        timeMode: settings.data.timeMode,
+        times: settings.data.times,
+        spreadSlots: settings.data.spreadSlots,
+        rotations: settings.data.rotations,
+        devices: settings.data.devices,
+      },
+      warnings: regions.data.warnings,
     },
   };
 }

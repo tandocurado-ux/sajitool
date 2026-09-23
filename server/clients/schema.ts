@@ -24,3 +24,29 @@ export function parseClientRename(
 
   return { ok: true, data: { id, name: parsed.data.name } };
 }
+
+// --------------------------------------------------------------------------
+// 新規顧客登録（/clients/new）の実行結果
+// --------------------------------------------------------------------------
+//
+// Client Component から読むので、"use server" ではないこのファイルに置く。
+
+import type { BulkSetupSummary } from "@/server/setup/schema";
+
+export type NewClientState = {
+  error: string | null;
+  warnings: string[];
+  summary: BulkSetupSummary | null;
+  /** 顧客は作れたが、その先で失敗したときに「どこまで」を伝える。 */
+  progress: string | null;
+  /** 作成できた顧客の id。失敗時に導線を出すために持つ。 */
+  createdClientId: string | null;
+};
+
+export const initialNewClientState: NewClientState = {
+  error: null,
+  warnings: [],
+  summary: null,
+  progress: null,
+  createdClientId: null,
+};

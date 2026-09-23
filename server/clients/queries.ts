@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { Client } from "@/lib/types";
+import type { Client, RunStatus } from "@/lib/types";
+import { hoursAgo, jstDateKey } from "@/lib/runs";
+import { listKeywordsByClientIds } from "@/server/keywords/queries";
+import { listRegionsByClientIds } from "@/server/regions/queries";
+import { listSchedulesByKeywordIds } from "@/server/schedules/queries";
+import { listRunsByScheduleIds } from "@/server/runs/queries";
 
 export async function listClients(): Promise<Client[]> {
   const supabase = await createSupabaseServerClient();
@@ -39,4 +44,119 @@ export async function isClientOwned(
     .eq("id", clientId)
     .maybeSingle();
   return Boolean(data);
+}
+
+// --------------------------------------------------------------------------
+// 顧客一覧の集計
+// --------------------------------------------------------------------------
+
+/** 「直近実行」を探す範囲。これより古い実行は「-」になる。 */
+export const CLIENT_RUN_WINDOW_DAYS = 7;
+
+export type ClientOverviewRow = {
+  client: Client;
+  keywordCount: number;
+  googleKeywords: number;
+  yahooKeywords: number;
+  regionCount: number;
+  scheduleCount: number;
+  enabledScheduleCount: number;
+  lastRunAt: string | null;
+  lastRunStatus: RunStatus | null;
+  todayRuns: number;
+  todayBlocked: number;
+};
+
+/**
+ * 顧客一覧に出す集計をまとめて取る。
+ *
+ * 顧客ごとにクエリを投げると件数ぶん往復するので、
+ * clients / keywords / regions / schedules / runs をそれぞれ1回だけ引いて
+ * メモリ上で突き合わせる（顧客が何百件でもクエリ数は変わらない）。
+ */
+export async function getClientsOverview(): Promise<ClientOverviewRow[]> {
+  const clients = await listClients();
+  if (clients.length === 0) return [];
+
+  const clientIds = clients.map((client) => client.id);
+  const [keywords, regions] = await Promise.all([
+    listKeywordsByClientIds(clientIds),
+    listRegionsByClientIds(clientIds),
+  ]);
+
+  const schedules = await listSchedulesByKeywordIds(
+    keywords.map((keyword) => keyword.id),
+  );
+  const runs = await listRunsByScheduleIds(
+    schedules.map((schedule) => schedule.id),
+    { since: hoursAgo(24 * CLIENT_RUN_WINDOW_DAYS) },
+  );
+
+  const clientIdByKeyword = new Map(
+    keywords.map((keyword) => [keyword.id, keyword.client_id]),
+  );
+  const clientIdBySchedule = new Map<string, string>();
+  for (const schedule of schedules) {
+    const clientId = clientIdByKeyword.get(schedule.keyword_id);
+    if (clientId) clientIdBySchedule.set(schedule.id, clientId);
+  }
+
+  const rows = new Map<string, ClientOverviewRow>(
+    clients.map((client) => [
+      client.id,
+      {
+        client,
+        keywordCount: 0,
+        googleKeywords: 0,
+        yahooKeywords: 0,
+        regionCount: 0,
+        scheduleCount: 0,
+        enabledScheduleCount: 0,
+        lastRunAt: null,
+        lastRunStatus: null,
+        todayRuns: 0,
+        todayBlocked: 0,
+      },
+    ]),
+  );
+
+  for (const keyword of keywords) {
+    const row = rows.get(keyword.client_id);
+    if (!row) continue;
+    row.keywordCount += 1;
+    if (keyword.platform === "google") row.googleKeywords += 1;
+    if (keyword.platform === "yahoo") row.yahooKeywords += 1;
+  }
+
+  for (const region of regions) {
+    const row = rows.get(region.client_id);
+    if (row) row.regionCount += 1;
+  }
+
+  for (const schedule of schedules) {
+    const clientId = clientIdBySchedule.get(schedule.id);
+    const row = clientId ? rows.get(clientId) : undefined;
+    if (!row) continue;
+    row.scheduleCount += 1;
+    if (schedule.enabled) row.enabledScheduleCount += 1;
+  }
+
+  // runs は run_at の降順で返るので、最初に見たものがその顧客の直近実行。
+  const today = jstDateKey(new Date());
+  for (const run of runs) {
+    const clientId = clientIdBySchedule.get(run.schedule_id);
+    const row = clientId ? rows.get(clientId) : undefined;
+    if (!row) continue;
+
+    if (row.lastRunAt === null) {
+      row.lastRunAt = run.run_at;
+      row.lastRunStatus = run.status;
+    }
+    if (jstDateKey(run.run_at) === today) {
+      row.todayRuns += 1;
+      if (run.status === "blocked") row.todayBlocked += 1;
+    }
+  }
+
+  return clients.map((client) => rows.get(client.id)!);
 }

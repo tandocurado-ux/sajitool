@@ -3,43 +3,31 @@
 import { useActionState, useMemo, useState } from "react";
 import { bulkCreateSchedules } from "@/server/setup/actions";
 import {
-  DEVICE_MODES,
   DEVICE_MODE_LABELS,
-  PLATFORM_MODES,
   PLATFORM_MODE_LABELS,
-  ROTATION_OPTIONS,
-  TIME_MODES,
-  TIME_MODE_LABELS,
   devicesFor,
   initialBulkSetupState,
   platformsFor,
   type DeviceMode,
   type PlatformMode,
   type PreviousSettings,
-  type TimeMode,
 } from "@/server/setup/schema";
-import { TIME_OPTIONS, parseKeywordLines, timeSlotsBetween } from "@/lib/parse";
-import {
-  SLOT_CAPACITY_SECONDS,
-  averageIntervalFor,
-} from "@/lib/intervals";
+import { parseKeywordLines } from "@/lib/parse";
+import { computeSchedulePlan } from "@/lib/schedule-plan";
 import type { Keyword, Region } from "@/lib/types";
 import { FormError } from "./form-error";
+import { isRegionDraftFilled, type RegionDraft } from "./region-picker";
+import { DeviceModeField } from "./setup/device-mode-field";
+import { PlatformModeField } from "./setup/platform-mode-field";
+import { RegionDraftList } from "./setup/region-draft-list";
+import { SchedulePreview } from "./setup/schedule-preview";
 import {
-  RegionPicker,
-  emptyRegionDraft,
-  isRegionDraftFilled,
-  regionDraftLabel,
-  type RegionDraft,
-} from "./region-picker";
-import { TimePicker } from "./time-picker";
-import {
-  cardClass,
-  inputClass,
-  labelClass,
-  primaryButtonClass,
-  subtleButtonClass,
-} from "./ui";
+  ScheduleTimingFields,
+  describeTiming,
+  isTimingReady,
+  type TimingValue,
+} from "./setup/schedule-timing-fields";
+import { cardClass, inputClass, primaryButtonClass, subtleButtonClass } from "./ui";
 
 type Props = {
   clientId: string;
@@ -54,6 +42,20 @@ type Props = {
 };
 
 const SEP = "\u0000";
+
+/** 推定した前回設定をフォームの時刻設定に変換する。 */
+function timingFrom(previous: PreviousSettings | null): TimingValue {
+  return {
+    timeMode: previous?.timeMode ?? "fixed",
+    times:
+      previous?.timeMode === "fixed" && previous.times.length > 0
+        ? previous.times
+        : ["09:00"],
+    spreadStart: previous?.spreadStart ?? "06:00",
+    spreadEnd: previous?.spreadEnd ?? "23:00",
+    rotations: previous?.rotations ?? 1,
+  };
+}
 
 export function BulkSetupForm({
   clientId,
@@ -94,34 +96,20 @@ export function BulkSetupForm({
     regions.map((region) => region.id),
   );
   const [newRegions, setNewRegions] = useState<RegionDraft[]>([]);
-  const [timeMode, setTimeMode] = useState<TimeMode>(
-    previousSettings?.timeMode ?? "fixed",
-  );
-  const [times, setTimes] = useState<string[]>(
-    previousSettings?.timeMode === "fixed" && previousSettings.times.length > 0
-      ? previousSettings.times
-      : ["09:00"],
-  );
-  const [spreadStart, setSpreadStart] = useState(
-    previousSettings?.spreadStart ?? "06:00",
-  );
-  const [spreadEnd, setSpreadEnd] = useState(previousSettings?.spreadEnd ?? "23:00");
-  const [rotations, setRotations] = useState(previousSettings?.rotations ?? 1);
+  const [timing, setTiming] = useState<TimingValue>(() => timingFrom(previousSettings));
   const [deviceMode, setDeviceMode] = useState<DeviceMode>(
     previousSettings?.deviceMode ?? "pc",
   );
+
+  function updateTiming(patch: Partial<TimingValue>) {
+    setTiming((current) => ({ ...current, ...patch }));
+  }
 
   function applyPreviousSettings() {
     if (!previousSettings) return;
     setPlatformMode(previousSettings.platformMode);
     setDeviceMode(previousSettings.deviceMode);
-    setTimeMode(previousSettings.timeMode);
-    if (previousSettings.timeMode === "fixed" && previousSettings.times.length > 0) {
-      setTimes(previousSettings.times);
-    }
-    setSpreadStart(previousSettings.spreadStart);
-    setSpreadEnd(previousSettings.spreadEnd);
-    setRotations(previousSettings.rotations);
+    setTiming(timingFrom(previousSettings));
   }
 
   const keywordIdByKey = useMemo(() => {
@@ -178,29 +166,24 @@ export function BulkSetupForm({
     scheduleKeySet,
   ]);
 
-  const spreadSlots = useMemo(
-    () => timeSlotsBetween(spreadStart, spreadEnd),
-    [spreadStart, spreadEnd],
-  );
   // 1枠あたり何件になるか、その枠を消化しきれるかの目安。
-  const averageInterval = averageIntervalFor(platforms);
-  const totalRuns = timeMode === "fixed" ? toCreate : toCreate * rotations;
-  const slotCount = timeMode === "fixed" ? times.length : spreadSlots.length;
-  const perSlot = slotCount > 0 ? Math.ceil(totalRuns / slotCount) : 0;
-  const drainSeconds = perSlot * averageInterval;
-  const overCapacity = drainSeconds > SLOT_CAPACITY_SECONDS;
-
-  const timesReady = timeMode === "fixed" ? times.length > 0 : spreadSlots.length > 0;
+  const plan = useMemo(
+    () =>
+      computeSchedulePlan({
+        toCreate,
+        timeMode: timing.timeMode,
+        times: timing.times,
+        spreadStart: timing.spreadStart,
+        spreadEnd: timing.spreadEnd,
+        rotations: timing.rotations,
+        platforms,
+      }),
+    [toCreate, timing, platforms],
+  );
 
   const regionCount = selectedRegionIds.length + filledNewRegions.length;
   const canSubmit =
-    keywords.length > 0 && regionCount > 0 && timesReady && toCreate > 0;
-
-  function updateDraft(key: string, patch: Partial<RegionDraft>) {
-    setNewRegions((drafts) =>
-      drafts.map((draft) => (draft.key === key ? { ...draft, ...patch } : draft)),
-    );
-  }
+    keywords.length > 0 && regionCount > 0 && isTimingReady(timing) && toCreate > 0;
 
   function toggleRegion(regionId: string) {
     setSelectedRegionIds((ids) =>
@@ -214,12 +197,10 @@ export function BulkSetupForm({
     const lines = [
       `この内容で ${toCreate} 件のスケジュールを作成します。`,
       `キーワード ${keywords.length} 件 × 検索エンジン ${platforms.length} × 地域 ${regionCount} 件 × デバイス ${devices.length}`,
-      timeMode === "fixed"
-        ? `時刻: ${times.join(", ")}（全件同じ）`
-        : `時刻: ${spreadStart}〜${spreadEnd} の ${spreadSlots.length} 枠に分散 / 1日 ${rotations} 回`,
-      `1枠あたり最大 ${perSlot} 件、消化見込み 約 ${Math.round(drainSeconds / 60)} 分`,
+      describeTiming(timing),
+      `1枠あたり最大 ${plan.perSlot} 件、消化見込み 約 ${Math.round(plan.drainSeconds / 60)} 分`,
     ];
-    if (overCapacity) {
+    if (plan.overCapacity) {
       lines.push("", "⚠ 1枠(60分)で消化しきれません。次の枠に食い込み、超過分は実行されません。");
     }
     if (toSkip > 0) lines.push(`（既に登録済みの ${toSkip} 件はスキップします）`);
@@ -236,17 +217,6 @@ export function BulkSetupForm({
     <form action={formAction} onSubmit={handleSubmit} className="flex flex-col gap-6">
       <input type="hidden" name="client_id" value={clientId} />
       <input type="hidden" name="keywords" value={keywords.join("\n")} />
-      <input
-        type="hidden"
-        name="new_regions"
-        value={JSON.stringify(
-          filledNewRegions.map(({ prefecture, city, label }) => ({
-            prefecture,
-            city,
-            label,
-          })),
-        )}
-      />
 
       {previousSettings ? (
         <section className="rounded-lg border border-neutral-300 bg-neutral-50 px-5 py-4">
@@ -355,27 +325,13 @@ export function BulkSetupForm({
           。
         </p>
 
-        <fieldset className="mt-4">
-          <legend className={labelClass}>検索エンジン</legend>
-          <div className="flex flex-wrap gap-4">
-            {PLATFORM_MODES.map((mode) => (
-              <label key={mode} className="flex items-center gap-2 text-sm">
-                <input
-                  type="radio"
-                  name="platform_mode"
-                  value={mode}
-                  checked={platformMode === mode}
-                  onChange={() => setPlatformMode(mode)}
-                />
-                {PLATFORM_MODE_LABELS[mode]}
-              </label>
-            ))}
-          </div>
-          <p className="mt-1 text-xs text-neutral-500">
-            「両方」を選ぶと、1キーワードにつき Google と Yahoo! の2件を登録します。
-            登録済みのキーワードはスキップされます。
-          </p>
-        </fieldset>
+        <div className="mt-4">
+          <PlatformModeField
+            value={platformMode}
+            onChange={setPlatformMode}
+            hint="「両方」を選ぶと、1キーワードにつき Google と Yahoo! の2件を登録します。登録済みのキーワードはスキップされます。"
+          />
+        </div>
       </section>
 
       {/* 2. 地域 */}
@@ -439,50 +395,7 @@ export function BulkSetupForm({
           </>
         )}
 
-        {newRegions.length > 0 ? (
-          <ul className="mt-4 flex flex-col gap-4">
-            {newRegions.map((draft) => (
-              <li
-                key={draft.key}
-                className="rounded border border-dashed border-neutral-300 p-3"
-              >
-                <RegionPicker
-                  draft={draft}
-                  onChange={(patch) => updateDraft(draft.key, patch)}
-                  idPrefix={`new-region-${draft.key}`}
-                />
-                <div className="mt-3 flex items-center justify-between gap-3">
-                  <p className="text-xs text-neutral-500">
-                    {isRegionDraftFilled(draft)
-                      ? `登録名: ${regionDraftLabel(draft)}`
-                      : "都道府県と市区町村を選んでください。"}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setNewRegions((drafts) =>
-                        drafts.filter((item) => item.key !== draft.key),
-                      )
-                    }
-                    className={subtleButtonClass}
-                  >
-                    この行を削除
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-
-        <div className="mt-4">
-          <button
-            type="button"
-            onClick={() => setNewRegions((drafts) => [...drafts, emptyRegionDraft()])}
-            className={subtleButtonClass}
-          >
-            + 地域を追加
-          </button>
-        </div>
+        <RegionDraftList drafts={newRegions} onChange={setNewRegions} />
       </section>
 
       {/* 3. スケジュール設定 */}
@@ -491,119 +404,11 @@ export function BulkSetupForm({
           3. スケジュール設定
         </h2>
 
-        <fieldset>
-          <legend className={labelClass}>時刻の決め方</legend>
-          <div className="flex flex-wrap gap-4">
-            {TIME_MODES.map((mode) => (
-              <label key={mode} className="flex items-center gap-2 text-sm">
-                <input
-                  type="radio"
-                  name="time_mode"
-                  value={mode}
-                  checked={timeMode === mode}
-                  onChange={() => setTimeMode(mode)}
-                />
-                {TIME_MODE_LABELS[mode]}
-              </label>
-            ))}
-          </div>
-        </fieldset>
+        <ScheduleTimingFields value={timing} onChange={updateTiming} />
 
         <div className="mt-4">
-          {timeMode === "fixed" ? (
-            <>
-              <TimePicker name="times" times={times} onChange={setTimes} />
-              <p className="mt-1 text-xs text-neutral-500">
-                作成するスケジュールすべてに同じ時刻が入ります。件数が多いと
-                同じ時刻に集中して、計測が後ろにずれ込みます。
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="mb-3">
-                <label htmlFor="spread-rotations" className={labelClass}>
-                  1日の回転数（1スケジュールあたりの計測回数）
-                </label>
-                <select
-                  id="spread-rotations"
-                  name="spread_rotations"
-                  value={rotations}
-                  onChange={(event) => setRotations(Number(event.target.value))}
-                  className={`${inputClass} w-32`}
-                >
-                  {ROTATION_OPTIONS.map((count) => (
-                    <option key={count} value={count}>
-                      1日 {count} 回
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <span className={labelClass}>分散する時間帯（15分刻み）</span>
-              <div className="flex flex-wrap items-center gap-2">
-                <select
-                  name="spread_start"
-                  value={spreadStart}
-                  onChange={(event) => setSpreadStart(event.target.value)}
-                  aria-label="開始時刻"
-                  className={`${inputClass} w-32`}
-                >
-                  {TIME_OPTIONS.map((time) => (
-                    <option key={time} value={time}>
-                      {time}
-                    </option>
-                  ))}
-                </select>
-                <span className="text-sm text-neutral-500">〜</span>
-                <select
-                  name="spread_end"
-                  value={spreadEnd}
-                  onChange={(event) => setSpreadEnd(event.target.value)}
-                  aria-label="終了時刻"
-                  className={`${inputClass} w-32`}
-                >
-                  {TIME_OPTIONS.map((time) => (
-                    <option key={time} value={time}>
-                      {time}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {spreadSlots.length === 0 ? (
-                <p className="mt-1 text-sm text-red-600">
-                  終了時刻は開始時刻と同じか、それより後にしてください。
-                </p>
-              ) : (
-                <p className="mt-1 text-xs text-neutral-500">
-                  {spreadSlots.length} 枠（{spreadSlots[0]} 〜{" "}
-                  {spreadSlots[spreadSlots.length - 1]}）に均等に割り振ります。
-                  1スケジュールあたり {rotations} 個の時刻が入ります。
-                </p>
-              )}
-            </>
-          )}
+          <DeviceModeField value={deviceMode} onChange={setDeviceMode} />
         </div>
-
-        <fieldset className="mt-4">
-          <legend className={labelClass}>デバイス</legend>
-          <div className="flex flex-wrap gap-4">
-            {DEVICE_MODES.map((mode) => (
-              <label key={mode} className="flex items-center gap-2 text-sm">
-                <input
-                  type="radio"
-                  name="device_mode"
-                  value={mode}
-                  checked={deviceMode === mode}
-                  onChange={() => setDeviceMode(mode)}
-                />
-                {DEVICE_MODE_LABELS[mode]}
-              </label>
-            ))}
-          </div>
-          <p className="mt-1 text-xs text-neutral-500">
-            「両方」を選ぶと PC とモバイルで2件ずつ作成します。
-          </p>
-        </fieldset>
       </section>
 
       {/* 4. 確認と登録 */}
@@ -620,43 +425,14 @@ export function BulkSetupForm({
           </span>
           {toSkip > 0 ? `（${toSkip} 件は登録済みのためスキップ）` : ""}
         </p>
-        <p className="mt-1 text-sm text-neutral-500">
-          {timeMode === "fixed"
-            ? `時刻: ${times.join(", ") || "未設定"}（全件同じ）`
-            : `時刻: ${spreadStart}〜${spreadEnd} の ${spreadSlots.length} 枠に分散 / 1日 ${rotations} 回`}
-        </p>
+        <p className="mt-1 text-sm text-neutral-500">{describeTiming(timing)}</p>
 
-        {slotCount > 0 && toCreate > 0 ? (
-          <div
-            className={`mt-3 rounded border px-4 py-3 text-sm ${
-              overCapacity
-                ? "border-red-300 bg-red-50 text-red-700"
-                : "border-neutral-200 bg-neutral-50 text-neutral-700"
-            }`}
-          >
-            <p>
-              1日の実行回数 {totalRuns} 回 ／ 1枠あたり最大{" "}
-              <span className="font-semibold">{perSlot} 件</span> ／ 消化見込み{" "}
-              <span className="font-semibold">
-                約 {Math.round(drainSeconds / 60)} 分
-              </span>
-              （平均間隔 {Math.round(averageInterval)} 秒）
-            </p>
-            {existingScheduleKeys.length > 0 ? (
-              <p className="mt-1 text-xs">
-                ※ ここに出しているのは今回作る分だけです。登録済みの{" "}
-                {existingScheduleKeys.length} 件はそれぞれの時刻で別に実行されます。
-              </p>
-            ) : null}
-            {overCapacity ? (
-              <p className="mt-1 font-semibold">
-                1枠（{SLOT_CAPACITY_SECONDS / 60} 分）で消化しきれません。
-                時間帯を広げるか回転数を減らすか、キーワード・地域を絞ってください。
-                このままだと超過分は実行されません。
-              </p>
-            ) : null}
-          </div>
-        ) : null}
+        <SchedulePreview
+          plan={plan}
+          toCreate={toCreate}
+          toSkip={toSkip}
+          existingScheduleCount={existingScheduleKeys.length}
+        />
 
         <div className="mt-4">
           <button
