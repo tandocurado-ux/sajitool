@@ -200,6 +200,33 @@ python engine/scheduler.py --no-proxy # 直結（ローカル確認用）
 
 地域の緯度経度が日本の範囲外のときは実行前に警告を出す（止めはしない）。
 
+### SOAX（住宅IPプロキシ）
+
+パッケージの識別は**パスワード側**で行われる。ユーザー名には package ID を入れず、
+オプション文字列そのものを組み立てて渡す（`engine/device.py`）。
+
+```
+proxy.soax.com:1337
+country-jp-region-osaka-network-res-rotate-timed_300-session-<sessionid>
+```
+
+| トークン | 由来 |
+| -------- | ---- |
+| `country` | `SOAX_COUNTRY`（既定 `jp`） |
+| `region` | `regions.prefecture`（日本語）を英語小文字に変換。`SOAX_REGION_ENABLED=0` で省略 |
+| `network` | `SOAX_NETWORK`（既定 `res` = 住宅IP） |
+| `rotate` | `rotate-timed_<SOAX_ROTATE_SECONDS>`（既定 300秒） |
+| `session` | 実行ごとにランダム生成。`SOAX_SESSION_ID` で固定も可 |
+
+実測で確定している注意点:
+
+- **`session` の値は英数字のみ。** ハイフンなどが混ざるとトークンの区切りと解釈されて壊れる。
+  英数字以外を除去 → 小文字化 → 32文字以内に詰めてから渡している
+- **`onerror` トークンは付けない。** `onerror-rotate` は無効で 400 になる。
+  エラー時の挙動はパッケージ既定に任せる
+- `region` は英語小文字（`osaka` / `aichi` …）。変換表は `device.py` の
+  `PREFECTURE_TO_SOAX_REGION` にある（47都道府県）
+
 ### 異常の早期検知（alerts.py）
 
 検知が遅れて計測を取りこぼすのを防ぐため、毎時の集計時に次を判定して通知する。
@@ -261,14 +288,16 @@ docker run --rm --env-file engine/.env sajitool-engine \
    | ---- | ---- | ---- |
    | `SUPABASE_URL` | ○ | Supabase の Project URL |
    | `SUPABASE_SERVICE_ROLE_KEY` | ○ | service_role キー。**公開厳禁** |
-   | `SOAX_USER` | ○ | SOAX のパッケージ名（例 `package-000000`） |
-   | `SOAX_PASS` | ○ | SOAX のパスワード |
-   | `SOAX_ENDPOINT` | ○ | 例 `proxy.soax.com:5000` |
+   | `SOAX_PASS` | ○ | SOAX のパスワード。**ここでパッケージが識別される** |
    | `ALERT_WEBHOOK_URL` | 任意 | Slack / Discord の incoming webhook。未設定ならログのみ |
-   | `SOAX_OPTION_SEPARATOR` | 任意 | 既定 `-` |
+   | `SOAX_ENDPOINT` | 任意 | 既定 `proxy.soax.com:1337` |
+   | `SOAX_REGION_ENABLED` | 任意 | 既定 `1`。`0` で地域指定なし |
    | `SOAX_COUNTRY` | 任意 | 既定 `jp` |
-   | `SOAX_REGION_OPTION` | 任意 | 既定 `region` |
-   | `SOAX_SESSION_LENGTH` | 任意 | 既定 `600` |
+   | `SOAX_NETWORK` | 任意 | 既定 `res`（住宅IP） |
+   | `SOAX_ROTATE_SECONDS` | 任意 | 既定 `300` |
+   | `SOAX_SESSION_ID` | 任意 | session を固定したいときだけ |
+
+   `SOAX_USER` は不要（旧仕様。設定されていても無視される）。
 
    `TZ` / `CHROME_PATH` / `CHROME_EXTRA_ARGS` / `DISPLAY` は Dockerfile で設定済み。
 

@@ -15,22 +15,22 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: SOAX_USER
-        sync: false
+      # SOAX はパスワードでパッケージを識別する（ユーザー名に package ID は不要）
       - key: SOAX_PASS
-        sync: false
-      - key: SOAX_ENDPOINT
         sync: false
       # Slack / Discord の incoming webhook。未設定ならログのみ。
       - key: ALERT_WEBHOOK_URL
         sync: false
 
       # --- 既定値のままで動くもの ---
-      - key: SOAX_OPTION_SEPARATOR
-        value: "-"
+      - key: SOAX_ENDPOINT
+        value: proxy.soax.com:1337
       - key: SOAX_COUNTRY
         value: jp
-      - key: SOAX_REGION_OPTION
-        value: region
-      - key: SOAX_SESSION_LENGTH
-        value: "600"
+      - key: SOAX_NETWORK
+        value: res
+      - key: SOAX_ROTATE_SECONDS
+        value: "300"
+      # regions.prefecture から region トークンを付けるか（0 で無効）
+      - key: SOAX_REGION_ENABLED
+        value: "1"

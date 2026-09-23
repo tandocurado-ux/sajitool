@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import string
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -114,8 +115,14 @@ def resolve_device(device: str) -> DeviceProfile:
 # SOAX プロキシ
 # --------------------------------------------------------------------------
 
-# SOAX はユーザー名にオプションを埋め込む方式。
-# 例: package-123456-country-jp-region-aichi-sessionid-ab12cd34-sessionlength-600
+# SOAX はユーザー名にオプション文字列そのものを入れる方式。
+# パッケージの識別はパスワード側で行われるので、ユーザー名に package ID は入れない。
+# 例: country-jp-region-osaka-network-res-rotate-timed_300-session-ab12cd34
+#
+# 注意（実測で確定済み）:
+#   - session の値は英数字のみ。ハイフン等が入るとトークン区切りと解釈されて壊れる
+#   - onerror トークンは付けない（onerror-rotate は無効で 400 になる）
+#   - region は英語小文字（osaka, aichi ...）
 PREFECTURE_TO_SOAX_REGION: dict[str, str] = {
     "北海道": "hokkaido",
     "青森県": "aomori",
@@ -188,37 +195,91 @@ def soax_region_for(prefecture: Optional[str]) -> Optional[str]:
     return None
 
 
-def build_proxy_config(prefecture: Optional[str] = None) -> Optional[ProxyConfig]:
-    """環境変数から SOAX の設定を組み立てる。未設定なら None。
+SOAX_DEFAULT_ENDPOINT = "proxy.soax.com:1337"
+SOAX_DEFAULT_COUNTRY = "jp"
+SOAX_DEFAULT_NETWORK = "res"
+SOAX_DEFAULT_ROTATE_SECONDS = "300"
 
-    ユーザー名に埋め込むオプションの区切り・接頭辞・書式は環境変数で調整できる。
+# session に使える文字と長さ。英数字以外が混ざるとトークン区切りとして壊れる。
+_SESSION_ALLOWED = re.compile(r"[^A-Za-z0-9]")
+SESSION_ID_MAX_LENGTH = 32
+
+
+def sanitize_session_id(raw: str) -> str:
+    """英数字以外を除去 → 小文字化 → 32文字以内に詰める。"""
+    return _SESSION_ALLOWED.sub("", raw).lower()[:SESSION_ID_MAX_LENGTH]
+
+
+def new_session_id() -> str:
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=16))
+
+
+def soax_region_enabled() -> bool:
+    """地域指定を使うか。既定は有効。"""
+    value = os.environ.get("SOAX_REGION_ENABLED", "1").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def build_soax_username(
+    *,
+    country: str,
+    region: Optional[str],
+    network: str,
+    rotate_seconds: str,
+    session_id: str,
+) -> str:
+    """SOAX のユーザー名（オプション文字列）を組み立てる。
+
+    トークンの区切りは "-" 固定。値に "-" を含められないので、
+    session は呼び出し前にサニタイズしておくこと。
     """
-    endpoint = os.environ.get("SOAX_ENDPOINT", "").strip()
-    user = os.environ.get("SOAX_USER", "").strip()
-    password = os.environ.get("SOAX_PASS", "").strip()
-    if not endpoint or not user or not password:
-        return None
-
-    separator = os.environ.get("SOAX_OPTION_SEPARATOR", "-")
-    country = os.environ.get("SOAX_COUNTRY", "jp").strip()
-    region_option = os.environ.get("SOAX_REGION_OPTION", "region").strip()
-    session_length = os.environ.get("SOAX_SESSION_LENGTH", "600").strip()
-
-    parts = [user]
+    parts: list[str] = []
     if country:
         parts += ["country", country]
+    if region:
+        parts += ["region", region]
+    if network:
+        parts += ["network", network]
+    if rotate_seconds:
+        # rotate-timed_300 で「300秒ごとにローテート」。
+        parts += ["rotate", f"timed_{rotate_seconds}"]
+    if session_id:
+        parts += ["session", session_id]
+    return "-".join(parts)
 
-    region = soax_region_for(prefecture)
-    if region and region_option:
-        parts += [region_option, region]
 
-    session_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    parts += ["sessionid", session_id]
-    if session_length:
-        parts += ["sessionlength", session_length]
+def build_proxy_config(prefecture: Optional[str] = None) -> Optional[ProxyConfig]:
+    """環境変数から SOAX の設定を組み立てる。SOAX_PASS が無ければ None。
+
+    パッケージの識別はパスワードで行われるため、ユーザー名側には
+    オプション文字列だけを入れる（package ID は不要）。
+    """
+    password = os.environ.get("SOAX_PASS", "").strip()
+    if not password:
+        return None
+
+    endpoint = os.environ.get("SOAX_ENDPOINT", "").strip() or SOAX_DEFAULT_ENDPOINT
+    country = os.environ.get("SOAX_COUNTRY", SOAX_DEFAULT_COUNTRY).strip()
+    network = os.environ.get("SOAX_NETWORK", SOAX_DEFAULT_NETWORK).strip()
+    rotate_seconds = os.environ.get(
+        "SOAX_ROTATE_SECONDS", SOAX_DEFAULT_ROTATE_SECONDS
+    ).strip()
+
+    region = soax_region_for(prefecture) if soax_region_enabled() else None
+
+    raw_session = os.environ.get("SOAX_SESSION_ID", "").strip() or new_session_id()
+    session_id = sanitize_session_id(raw_session)
 
     return ProxyConfig(
-        server=endpoint, username=separator.join(parts), password=password
+        server=endpoint,
+        username=build_soax_username(
+            country=country,
+            region=region,
+            network=network,
+            rotate_seconds=rotate_seconds,
+            session_id=session_id,
+        ),
+        password=password,
     )
 
 
