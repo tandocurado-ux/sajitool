@@ -11,6 +11,7 @@ import { AddKeywordForm } from "@/components/add-keyword-form";
 import { AddRegionForm } from "@/components/add-region-form";
 import { AddScheduleForm } from "@/components/add-schedule-form";
 import { ScheduleToggle } from "@/components/schedule-toggle";
+import { ClientNameEditor } from "@/components/client-name-editor";
 import { DeleteButton } from "@/components/delete-button";
 import { RunStatusBadge } from "@/components/run-status-badge";
 import { cardClass, primaryButtonClass } from "@/components/ui";
@@ -101,6 +102,41 @@ export default async function ClientDetailPage(
   const keywordById = new Map(keywords.map((keyword) => [keyword.id, keyword]));
   const regionById = new Map(regions.map((region) => [region.id, region]));
 
+  // サマリと「未使用」バッジのために、キーワード／地域ごとのスケジュール数を数える。
+  const schedulesByKeyword = new Map<string, number>();
+  const schedulesByRegion = new Map<string, number>();
+  const usedTimes = new Set<string>();
+  let enabledSchedules = 0;
+
+  for (const schedule of schedules) {
+    schedulesByKeyword.set(
+      schedule.keyword_id,
+      (schedulesByKeyword.get(schedule.keyword_id) ?? 0) + 1,
+    );
+    schedulesByRegion.set(
+      schedule.region_id,
+      (schedulesByRegion.get(schedule.region_id) ?? 0) + 1,
+    );
+    for (const time of schedule.times ?? []) usedTimes.add(formatTime(time));
+    if (schedule.enabled) enabledSchedules += 1;
+  }
+
+  const keywordsByPlatform = new Map<string, number>();
+  for (const keyword of keywords) {
+    keywordsByPlatform.set(
+      keyword.platform,
+      (keywordsByPlatform.get(keyword.platform) ?? 0) + 1,
+    );
+  }
+
+  const sortedTimes = [...usedTimes].sort();
+  const unusedKeywords = keywords.filter(
+    (keyword) => !schedulesByKeyword.has(keyword.id),
+  ).length;
+  const unusedRegions = regions.filter(
+    (region) => !schedulesByRegion.has(region.id),
+  ).length;
+
   const counts: Partial<Record<Tab, number>> = {
     keywords: keywords.length,
     regions: regions.length,
@@ -131,12 +167,59 @@ export default async function ClientDetailPage(
           ← 顧客一覧へ戻る
         </Link>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-xl font-semibold text-neutral-900">{client.name}</h1>
+          <ClientNameEditor id={id} name={client.name}>
+            <h1 className="text-xl font-semibold text-neutral-900">{client.name}</h1>
+          </ClientNameEditor>
           <Link href={`/clients/${id}/setup`} className={primaryButtonClass}>
             まとめて登録
           </Link>
         </div>
       </div>
+
+      <section className={cardClass}>
+        <h2 className="mb-3 text-sm font-semibold text-neutral-900">登録内容</h2>
+        <dl className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded border border-neutral-200 px-3 py-2">
+            <dt className="text-xs text-neutral-500">キーワード</dt>
+            <dd className="text-lg font-semibold text-neutral-900">
+              {keywords.length}
+              <span className="ml-2 text-xs font-normal text-neutral-500">
+                {PLATFORM_LABELS.google} {keywordsByPlatform.get("google") ?? 0} /{" "}
+                {PLATFORM_LABELS.yahoo} {keywordsByPlatform.get("yahoo") ?? 0}
+              </span>
+            </dd>
+            {unusedKeywords > 0 ? (
+              <dd className="mt-1 text-xs text-amber-700">
+                未使用 {unusedKeywords} 件
+              </dd>
+            ) : null}
+          </div>
+          <div className="rounded border border-neutral-200 px-3 py-2">
+            <dt className="text-xs text-neutral-500">地域</dt>
+            <dd className="text-lg font-semibold text-neutral-900">{regions.length}</dd>
+            {unusedRegions > 0 ? (
+              <dd className="mt-1 text-xs text-amber-700">
+                未使用 {unusedRegions} 件
+              </dd>
+            ) : null}
+          </div>
+          <div className="rounded border border-neutral-200 px-3 py-2">
+            <dt className="text-xs text-neutral-500">スケジュール</dt>
+            <dd className="text-lg font-semibold text-neutral-900">
+              {schedules.length}
+              <span className="ml-2 text-xs font-normal text-neutral-500">
+                有効 {enabledSchedules} / 無効 {schedules.length - enabledSchedules}
+              </span>
+            </dd>
+          </div>
+        </dl>
+        <div className="mt-3">
+          <p className="text-xs text-neutral-500">設定時刻（{sortedTimes.length} 種類）</p>
+          <p className="mt-1 text-sm text-neutral-800">
+            {sortedTimes.length === 0 ? "まだありません" : sortedTimes.join(" / ")}
+          </p>
+        </div>
+      </section>
 
       <nav className="flex gap-1 border-b border-neutral-200">
         {TABS.map((tab) => (
@@ -185,7 +268,14 @@ export default async function ClientDetailPage(
                       </p>
                       <p className="text-xs text-neutral-500">
                         {PLATFORM_LABELS[keyword.platform] ?? keyword.platform}
+                        {" ・ "}
+                        スケジュール {schedulesByKeyword.get(keyword.id) ?? 0} 件
                       </p>
+                      {schedulesByKeyword.has(keyword.id) ? null : (
+                        <span className="mt-1 inline-block rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
+                          未使用
+                        </span>
+                      )}
                     </div>
                     <DeleteButton
                       action={removeKeyword}
@@ -236,7 +326,14 @@ export default async function ClientDetailPage(
                         {region.lat !== null && region.lng !== null
                           ? ` / ${region.lat}, ${region.lng}`
                           : ""}
+                        {" ・ "}
+                        スケジュール {schedulesByRegion.get(region.id) ?? 0} 件
                       </p>
+                      {schedulesByRegion.has(region.id) ? null : (
+                        <span className="mt-1 inline-block rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
+                          未使用
+                        </span>
+                      )}
                     </div>
                     <DeleteButton
                       action={removeRegion}

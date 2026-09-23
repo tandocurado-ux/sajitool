@@ -1,5 +1,6 @@
 import {
   TIME_OPTIONS,
+  formatTime,
   parseKeywordLines,
   parseTimes,
   timeSlotsBetween,
@@ -285,3 +286,87 @@ export const initialBulkSetupState: BulkSetupState = {
   summary: null,
   progress: null,
 };
+
+// --------------------------------------------------------------------------
+// 既存スケジュールからの設定の引き継ぎ
+// --------------------------------------------------------------------------
+
+export type PreviousSettings = {
+  platformMode: PlatformMode;
+  deviceMode: DeviceMode;
+  timeMode: TimeMode;
+  times: string[];
+  spreadStart: string;
+  spreadEnd: string;
+  rotations: number;
+  /** 何件のスケジュールから推定したか。 */
+  scheduleCount: number;
+};
+
+type KeywordLike = { id: string; platform: string };
+type ScheduleLike = { keyword_id: string; device: string; times: string[] };
+
+function modeFromValues<T extends string>(
+  values: Set<string>,
+  first: T,
+  second: T,
+  both: T,
+): T {
+  if (values.has(first) && values.has(second)) return both;
+  if (values.has(second)) return second;
+  return first;
+}
+
+/**
+ * 既存のスケジュールから「前回どう登録したか」を推定する。
+ *
+ * 時刻がすべて同じなら「全件同じ時刻」、バラけていれば
+ * その範囲での自動分散だったとみなす。
+ */
+export function derivePreviousSettings(
+  keywords: KeywordLike[],
+  schedules: ScheduleLike[],
+): PreviousSettings | null {
+  if (schedules.length === 0) return null;
+
+  const platformById = new Map(keywords.map((k) => [k.id, k.platform]));
+  const platforms = new Set<string>();
+  const devices = new Set<string>();
+  const signatures = new Set<string>();
+  const allTimes = new Set<string>();
+  const rotationCounts = new Map<number, number>();
+
+  for (const schedule of schedules) {
+    const platform = platformById.get(schedule.keyword_id);
+    if (platform) platforms.add(platform);
+    devices.add(schedule.device);
+
+    const times = (schedule.times ?? []).map(formatTime).sort();
+    for (const time of times) allTimes.add(time);
+    signatures.add(times.join(","));
+    rotationCounts.set(times.length, (rotationCounts.get(times.length) ?? 0) + 1);
+  }
+
+  const sortedTimes = [...allTimes].sort();
+  const sameTimes = signatures.size === 1;
+
+  let rotations = 1;
+  let best = -1;
+  for (const [count, times] of rotationCounts) {
+    if (times > best && count >= 1) {
+      best = times;
+      rotations = Math.min(3, Math.max(1, count));
+    }
+  }
+
+  return {
+    platformMode: modeFromValues(platforms, "google", "yahoo", "both"),
+    deviceMode: modeFromValues(devices, "pc", "mobile", "both"),
+    timeMode: sameTimes ? "fixed" : "spread",
+    times: sameTimes ? [...(signatures.values().next().value ?? "").split(",")].filter(Boolean) : sortedTimes,
+    spreadStart: sortedTimes[0] ?? "06:00",
+    spreadEnd: sortedTimes[sortedTimes.length - 1] ?? "23:00",
+    rotations,
+    scheduleCount: schedules.length,
+  };
+}

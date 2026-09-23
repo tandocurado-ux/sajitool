@@ -5,6 +5,8 @@ import { listKeywords } from "@/server/keywords/queries";
 import { listRegions } from "@/server/regions/queries";
 import { listSchedulesByKeywordIds } from "@/server/schedules/queries";
 import { BulkSetupForm } from "@/components/bulk-setup-form";
+import { derivePreviousSettings } from "@/server/setup/schema";
+import { formatTime } from "@/lib/parse";
 
 export const metadata = {
   title: "まとめて登録 | サジェツール",
@@ -26,6 +28,9 @@ export default async function ClientSetupPage(
     keywords.map((keyword) => keyword.id),
   );
 
+  // 既存スケジュールから「前回どう登録したか」を推定して、そのまま使えるようにする。
+  const previousSettings = derivePreviousSettings(keywords, schedules);
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -39,8 +44,8 @@ export default async function ClientSetupPage(
           まとめて登録 — {client.name}
         </h1>
         <p className="mt-1 text-sm text-neutral-500">
-          キーワード × 検索エンジン × 地域 × デバイスの組み合わせを、
-          このページだけでまとめて作成できます。
+          登録済みのキーワードと地域は最初から選択済みです。増やしたぶんだけ足せば、
+          不足しているスケジュールだけが作られます（重複はスキップ）。
         </p>
       </div>
 
@@ -56,6 +61,20 @@ export default async function ClientSetupPage(
           (schedule) =>
             `${schedule.keyword_id}|${schedule.region_id}|${schedule.device}`,
         )}
+        scheduleCountByKeyword={keywords.map((keyword) => ({
+          keyword: keyword.keyword,
+          count: schedules.filter(
+            (schedule) => schedule.keyword_id === keyword.id,
+          ).length,
+          times: [
+            ...new Set(
+              schedules
+                .filter((schedule) => schedule.keyword_id === keyword.id)
+                .flatMap((schedule) => (schedule.times ?? []).map(formatTime)),
+            ),
+          ].sort(),
+        }))}
+        previousSettings={previousSettings}
       />
     </div>
   );

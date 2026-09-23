@@ -15,6 +15,7 @@ import {
   platformsFor,
   type DeviceMode,
   type PlatformMode,
+  type PreviousSettings,
   type TimeMode,
 } from "@/server/setup/schema";
 import { TIME_OPTIONS, parseKeywordLines, timeSlotsBetween } from "@/lib/parse";
@@ -46,6 +47,10 @@ type Props = {
   existingKeywords: Pick<Keyword, "id" | "keyword" | "platform">[];
   /** `keywordId|regionId|device` の一覧。既存スケジュールの判定に使う。 */
   existingScheduleKeys: string[];
+  /** 登録済みキーワードごとのスケジュール数と使われている時刻。 */
+  scheduleCountByKeyword: { keyword: string; count: number; times: string[] }[];
+  /** 既存スケジュールから推定した前回の設定。無ければ null。 */
+  previousSettings: PreviousSettings | null;
 };
 
 const SEP = "\u0000";
@@ -55,22 +60,69 @@ export function BulkSetupForm({
   regions,
   existingKeywords,
   existingScheduleKeys,
+  scheduleCountByKeyword,
+  previousSettings,
 }: Props) {
   const [state, formAction, pending] = useActionState(
     bulkCreateSchedules,
     initialBulkSetupState,
   );
 
+  // 登録済みのキーワードは最初から選択済み。差分だけ足せばよい状態にする。
+  const knownKeywords = useMemo(() => {
+    const seen = new Map<string, { keyword: string; count: number; times: string[] }>();
+    for (const entry of scheduleCountByKeyword) {
+      const current = seen.get(entry.keyword);
+      if (current) {
+        current.count += entry.count;
+        current.times = [...new Set([...current.times, ...entry.times])].sort();
+      } else {
+        seen.set(entry.keyword, { ...entry, times: [...entry.times] });
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.keyword.localeCompare(b.keyword, "ja"));
+  }, [scheduleCountByKeyword]);
+
   const [keywordsText, setKeywordsText] = useState("");
-  const [platformMode, setPlatformMode] = useState<PlatformMode>("google");
-  const [selectedRegionIds, setSelectedRegionIds] = useState<string[]>([]);
+  const [selectedExistingKeywords, setSelectedExistingKeywords] = useState<string[]>(
+    () => knownKeywords.map((entry) => entry.keyword),
+  );
+  const [platformMode, setPlatformMode] = useState<PlatformMode>(
+    previousSettings?.platformMode ?? "google",
+  );
+  const [selectedRegionIds, setSelectedRegionIds] = useState<string[]>(() =>
+    regions.map((region) => region.id),
+  );
   const [newRegions, setNewRegions] = useState<RegionDraft[]>([]);
-  const [timeMode, setTimeMode] = useState<TimeMode>("fixed");
-  const [times, setTimes] = useState<string[]>(["09:00"]);
-  const [spreadStart, setSpreadStart] = useState("06:00");
-  const [spreadEnd, setSpreadEnd] = useState("23:00");
-  const [rotations, setRotations] = useState(1);
-  const [deviceMode, setDeviceMode] = useState<DeviceMode>("pc");
+  const [timeMode, setTimeMode] = useState<TimeMode>(
+    previousSettings?.timeMode ?? "fixed",
+  );
+  const [times, setTimes] = useState<string[]>(
+    previousSettings?.timeMode === "fixed" && previousSettings.times.length > 0
+      ? previousSettings.times
+      : ["09:00"],
+  );
+  const [spreadStart, setSpreadStart] = useState(
+    previousSettings?.spreadStart ?? "06:00",
+  );
+  const [spreadEnd, setSpreadEnd] = useState(previousSettings?.spreadEnd ?? "23:00");
+  const [rotations, setRotations] = useState(previousSettings?.rotations ?? 1);
+  const [deviceMode, setDeviceMode] = useState<DeviceMode>(
+    previousSettings?.deviceMode ?? "pc",
+  );
+
+  function applyPreviousSettings() {
+    if (!previousSettings) return;
+    setPlatformMode(previousSettings.platformMode);
+    setDeviceMode(previousSettings.deviceMode);
+    setTimeMode(previousSettings.timeMode);
+    if (previousSettings.timeMode === "fixed" && previousSettings.times.length > 0) {
+      setTimes(previousSettings.times);
+    }
+    setSpreadStart(previousSettings.spreadStart);
+    setSpreadEnd(previousSettings.spreadEnd);
+    setRotations(previousSettings.rotations);
+  }
 
   const keywordIdByKey = useMemo(() => {
     const map = new Map<string, string>();
@@ -85,7 +137,12 @@ export function BulkSetupForm({
     [existingScheduleKeys],
   );
 
-  const keywords = useMemo(() => parseKeywordLines(keywordsText), [keywordsText]);
+  // 「登録済みのうち選んだもの」＋「新しく入力したもの」が対象。
+  const newKeywords = useMemo(() => parseKeywordLines(keywordsText), [keywordsText]);
+  const keywords = useMemo(
+    () => parseKeywordLines([...selectedExistingKeywords, ...newKeywords].join("\n")),
+    [selectedExistingKeywords, newKeywords],
+  );
   const platforms = platformsFor(platformMode);
   const devices = devicesFor(deviceMode);
   const filledNewRegions = newRegions.filter(isRegionDraftFilled);
@@ -178,6 +235,7 @@ export function BulkSetupForm({
   return (
     <form action={formAction} onSubmit={handleSubmit} className="flex flex-col gap-6">
       <input type="hidden" name="client_id" value={clientId} />
+      <input type="hidden" name="keywords" value={keywords.join("\n")} />
       <input
         type="hidden"
         name="new_regions"
@@ -190,15 +248,99 @@ export function BulkSetupForm({
         )}
       />
 
+      {previousSettings ? (
+        <section className="rounded-lg border border-neutral-300 bg-neutral-50 px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-neutral-900">
+                前回と同じ設定を使う
+              </p>
+              <p className="mt-1 text-xs text-neutral-600">
+                登録済みの {previousSettings.scheduleCount} 件のスケジュールから推定:{" "}
+                {PLATFORM_MODE_LABELS[previousSettings.platformMode]} ／{" "}
+                {DEVICE_MODE_LABELS[previousSettings.deviceMode]} ／{" "}
+                {previousSettings.timeMode === "fixed"
+                  ? `${previousSettings.times.join(", ")}（全件同じ）`
+                  : `${previousSettings.spreadStart}〜${previousSettings.spreadEnd} に分散 / 1日 ${previousSettings.rotations} 回`}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={applyPreviousSettings}
+              className={subtleButtonClass}
+            >
+              この設定を適用
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       {/* 1. キーワード */}
       <section className={cardClass}>
         <h2 className="text-sm font-semibold text-neutral-900">1. キーワード</h2>
-        <p className="mt-1 text-xs text-neutral-500">
-          1行に1キーワード。まとめて貼り付けできます。
+
+        {knownKeywords.length > 0 ? (
+          <div className="mt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-neutral-500">
+                登録済み {knownKeywords.length} 件（選択中 {selectedExistingKeywords.length} 件）
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelectedExistingKeywords(knownKeywords.map((e) => e.keyword))
+                  }
+                  className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline"
+                >
+                  すべて選択
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedExistingKeywords([])}
+                  className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline"
+                >
+                  すべて解除
+                </button>
+              </div>
+            </div>
+            <ul className="mt-2 grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2">
+              {knownKeywords.map((entry) => (
+                <li key={entry.keyword}>
+                  <label className="flex items-start gap-2 rounded border border-neutral-200 px-3 py-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={selectedExistingKeywords.includes(entry.keyword)}
+                      onChange={() =>
+                        setSelectedExistingKeywords((current) =>
+                          current.includes(entry.keyword)
+                            ? current.filter((value) => value !== entry.keyword)
+                            : [...current, entry.keyword],
+                        )
+                      }
+                      className="mt-1"
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate text-neutral-900">
+                        {entry.keyword}
+                      </span>
+                      <span className="block text-xs text-neutral-500">
+                        スケジュール {entry.count} 件
+                        {entry.times.length > 0 ? ` ・ ${entry.times.join(" / ")}` : ""}
+                      </span>
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        <p className="mt-4 text-xs text-neutral-500">
+          新しく追加するキーワード（1行に1つ。まとめて貼り付けできます）
         </p>
 
         <textarea
-          name="keywords"
           rows={8}
           value={keywordsText}
           onChange={(event) => setKeywordsText(event.target.value)}
@@ -206,7 +348,11 @@ export function BulkSetupForm({
           className={`${inputClass} mt-3 font-mono`}
         />
         <p className="mt-1 text-xs text-neutral-500">
-          {keywords.length} 件のキーワードを認識しました。
+          対象は {keywords.length} 件
+          {knownKeywords.length > 0
+            ? `（登録済み ${selectedExistingKeywords.length} 件 + 新規 ${newKeywords.filter((k) => !selectedExistingKeywords.includes(k)).length} 件）`
+            : ""}
+          。
         </p>
 
         <fieldset className="mt-4">
@@ -242,9 +388,28 @@ export function BulkSetupForm({
           </p>
         ) : (
           <>
-            <p className="mt-1 text-xs text-neutral-500">
-              登録済みの地域から選べます（複数可）。
-            </p>
+            <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-neutral-500">
+                登録済み {regions.length} 件（選択中 {selectedRegionIds.length} 件）。
+                既存のキーワードとの組み合わせで足りないぶんだけ作られます。
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedRegionIds(regions.map((r) => r.id))}
+                  className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline"
+                >
+                  すべて選択
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedRegionIds([])}
+                  className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline"
+                >
+                  すべて解除
+                </button>
+              </div>
+            </div>
             <ul className="mt-3 grid gap-2 sm:grid-cols-2">
               {regions.map((region) => (
                 <li key={region.id}>
@@ -447,17 +612,14 @@ export function BulkSetupForm({
 
         <p className="mt-2 text-sm text-neutral-700">
           キーワード {keywords.length} 件 × 検索エンジン {platforms.length} × 地域{" "}
-          {regionCount} 件 × デバイス {devices.length} ={" "}
-          <span className="text-lg font-semibold text-neutral-900">
-            {toCreate} 件
-          </span>{" "}
-          のスケジュールを作成します。
+          {regionCount} 件 × デバイス {devices.length} = 全 {toCreate + toSkip} 件の組み合わせ
         </p>
-        {toSkip > 0 ? (
-          <p className="mt-1 text-sm text-neutral-500">
-            うち {toSkip} 件は既に登録済みのためスキップします。
-          </p>
-        ) : null}
+        <p className="mt-1 text-sm text-neutral-700">
+          このうち<span className="text-lg font-semibold text-neutral-900">
+            {" "}新規に作られるのは {toCreate} 件
+          </span>
+          {toSkip > 0 ? `（${toSkip} 件は登録済みのためスキップ）` : ""}
+        </p>
         <p className="mt-1 text-sm text-neutral-500">
           {timeMode === "fixed"
             ? `時刻: ${times.join(", ") || "未設定"}（全件同じ）`
@@ -480,6 +642,12 @@ export function BulkSetupForm({
               </span>
               （平均間隔 {Math.round(averageInterval)} 秒）
             </p>
+            {existingScheduleKeys.length > 0 ? (
+              <p className="mt-1 text-xs">
+                ※ ここに出しているのは今回作る分だけです。登録済みの{" "}
+                {existingScheduleKeys.length} 件はそれぞれの時刻で別に実行されます。
+              </p>
+            ) : null}
             {overCapacity ? (
               <p className="mt-1 font-semibold">
                 1枠（{SLOT_CAPACITY_SECONDS / 60} 分）で消化しきれません。
