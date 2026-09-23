@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { assignSpreadSlot } from "@/lib/parse";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getUserFrom } from "@/server/auth/queries";
 import { isClientOwned } from "@/server/clients/queries";
@@ -177,6 +178,12 @@ export async function bulkCreateSchedules(
     enabled: boolean;
   }[] = [];
 
+  // 自動分散のときは、作る順に15分枠へ均等に割り振る。
+  // 枠数と互いに素な歩幅で飛ばすので、同じキーワードの数パターンが
+  // 隣り合う枠に固まらない。
+  const spreadSlots = input.timeMode === "spread" ? input.spreadSlots : null;
+  let assigned = 0;
+
   for (const keyword of input.keywords) {
     for (const platform of input.platforms) {
       const keywordId = keywordIdByKey.get(keywordKey(keyword, platform));
@@ -187,11 +194,15 @@ export async function bulkCreateSchedules(
             summary.schedulesSkipped += 1;
             continue;
           }
+          const times = spreadSlots
+            ? [assignSpreadSlot(assigned, spreadSlots)]
+            : input.times;
+          assigned += 1;
           scheduleRows.push({
             keyword_id: keywordId,
             region_id: regionId,
             device,
-            times: input.times,
+            times,
             enabled: true,
           });
         }

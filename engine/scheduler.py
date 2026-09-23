@@ -54,6 +54,13 @@ DEFAULT_RUN_INTERVAL_MAX_SECONDS = 180.0
 # 1つの時刻枠に収まってほしい時間。超えると次の枠に食い込む。
 SLOT_CAPACITY_SECONDS = 3600
 
+# キューに積む上限。QUEUE_MAX_ITEMS で変えられる。
+DEFAULT_QUEUE_MAX_ITEMS = 60
+
+# 実行が長引いて分をまたいだときに遡ってよい分数。
+# これを超える取りこぼしは積まない（過去分のバックフィルはしない）。
+MAX_CATCHUP_MINUTES = 5
+
 # 起動時に表示する「今日の残り予定」の最大行数。
 MAX_PLAN_LINES = 20
 
@@ -108,6 +115,11 @@ def _env_float(name: str, default: float) -> float:
     return value
 
 
+def queue_max_items() -> int:
+    """キューに積む上限。1つの時刻枠で消化できる量に抑えるためのガード。"""
+    return int(_env_float("QUEUE_MAX_ITEMS", float(DEFAULT_QUEUE_MAX_ITEMS)))
+
+
 def run_interval_range() -> tuple[float, float]:
     """実行間隔の下限・上限（秒）。"""
     minimum = _env_float("RUN_INTERVAL_MIN_SECONDS", DEFAULT_RUN_INTERVAL_MIN_SECONDS)
@@ -121,25 +133,66 @@ def run_interval_range() -> tuple[float, float]:
     return minimum, maximum
 
 
-def interleave_by_platform(jobs: list[Job]) -> list[Job]:
-    """google と yahoo を交互に並べる。
-
-    Google への連続アクセス間隔を実質2倍に稼ぐのが狙い。
-    片方しか無ければ順序はそのまま。
-    """
+def _alternate_by_platform(jobs: list[Job]) -> list[Job]:
+    """1キーワード分のジョブを google / yahoo 交互に並べ替える。"""
     buckets: dict[str, list[Job]] = {}
     for job in jobs:
         buckets.setdefault(job.target.platform, []).append(job)
     if len(buckets) < 2:
         return list(jobs)
 
-    # 件数の多いプラットフォームから取り出して、偏りを後ろに残さない。
     order = sorted(buckets, key=lambda name: (-len(buckets[name]), name))
     result: list[Job] = []
     while any(buckets[name] for name in order):
         for name in order:
             if buckets[name]:
                 result.append(buckets[name].pop(0))
+    return result
+
+
+def spread_jobs(jobs: list[Job]) -> list[Job]:
+    """同じキーワードが連続しないよう、キーワード単位でラウンドロビンする。
+
+    同一キーワードの4パターン（google/yahoo × pc/mobile）が数分間隔で
+    連射されると BOT 検知のシグナルになるため、必ず別キーワードを挟む。
+    あわせて platform も直前と変えて、Google への連続アクセスを減らす。
+
+    渡された順序（＝日次シャッフル後の順序）は、同点のときの決定に使う。
+    ここで名前順に並べ替えてしまうとシャッフルが無意味になる。
+    """
+    buckets: dict[str, list[Job]] = {}
+    appeared: dict[str, int] = {}
+    for index, job in enumerate(jobs):
+        keyword = job.target.keyword
+        buckets.setdefault(keyword, []).append(job)
+        appeared.setdefault(keyword, index)
+
+    # キーワード内でも platform を交互にして、先頭の platform が偏らないようにする。
+    for keyword, items in buckets.items():
+        buckets[keyword] = _alternate_by_platform(items)
+
+    result: list[Job] = []
+    last_keyword: Optional[str] = None
+    last_platform: Optional[str] = None
+
+    while any(buckets.values()):
+        candidates = [name for name, items in buckets.items() if items]
+
+        def rank(name: str):
+            head = buckets[name][0]
+            return (
+                name == last_keyword,  # 直前と同じキーワードは後回し
+                head.target.platform == last_platform,  # platform も変えたい
+                -len(buckets[name]),  # 残りが多いものから消化して偏りを残さない
+                appeared[name],  # 最後はシャッフル順を尊重する
+            )
+
+        chosen = min(candidates, key=rank)
+        job = buckets[chosen].pop(0)
+        result.append(job)
+        last_keyword = chosen
+        last_platform = job.target.platform
+
     return result
 
 
@@ -151,7 +204,7 @@ def order_jobs(jobs: list[Job], *, seed: str) -> list[Job]:
     """
     shuffled = list(jobs)
     random.Random(seed).shuffle(shuffled)
-    return interleave_by_platform(shuffled)
+    return spread_jobs(shuffled)
 
 
 def slot_for(times: list[str], hhmm: str) -> Optional[str]:
@@ -176,10 +229,13 @@ class Scheduler:
         self.started_at: Optional[datetime] = None
         self.last_daily_date: Optional[str] = None
         self.gap_min, self.gap_max = run_interval_range()
+        self.queue_max = queue_max_items()
 
         self.stopping = False
         self.next_allowed_at = 0.0  # time.monotonic() ベース
-        self.last_scanned_minute: Optional[str] = None
+        # どの分まで見たか。起動前の枠を積まないための基準。
+        self.last_scanned_minute: Optional[datetime] = None
+        self.last_loop_minute: Optional[str] = None
         self.last_summary_hour: Optional[str] = None
 
     # ------------------------------------------------------------------
@@ -234,17 +290,12 @@ class Scheduler:
 
     def bootstrap(self, now: datetime) -> int:
         self.refresh(now)
-
-        # 起動前に過ぎている枠は実行しない（過去分のバックフィルはしない）。
-        today = now.strftime("%Y-%m-%d")
-        current = now.strftime("%H:%M")
-        for target in self.targets:
-            for slot in target.times:
-                if slot < current:
-                    self.done.add(done_key(today, target.schedule_id, slot))
-
         restored = self.restore_from_runs(now)
-        self.last_scanned_minute = current
+
+        # last_scanned_minute を None のままにしておくと、
+        # 最初のスキャンは現在の分だけを見る（過去分は積まない）。
+        self.last_scanned_minute = None
+        self.last_loop_minute = now.strftime("%H:%M")
         self.enqueue_due(now)
         return restored
 
@@ -252,31 +303,98 @@ class Scheduler:
     # キュー
     # ------------------------------------------------------------------
 
+    def scan_window(self, now: datetime) -> list[tuple[str, str]]:
+        """今回のスキャンで見る分の一覧を返し、基準を進める。
+
+        起動直後と通常時は現在の分だけ。実行が長引いて分をまたいだときだけ、
+        取りこぼさないように前回スキャンの次の分まで遡る（最大
+        MAX_CATCHUP_MINUTES 分）。起動前の枠は絶対に見ない。
+        """
+        current = now.replace(second=0, microsecond=0)
+        previous = self.last_scanned_minute
+
+        if previous is None:
+            start = current
+        else:
+            start = previous + timedelta(minutes=1)
+            oldest = current - timedelta(minutes=MAX_CATCHUP_MINUTES)
+            if start < oldest:
+                skipped = int((oldest - start).total_seconds() // 60)
+                print(
+                    f"[{now:%H:%M}] ! 実行が長引き {skipped} 分ぶんのスキャンを"
+                    "飛ばしました。その間の枠は実行しません。"
+                )
+                start = oldest
+
+        self.last_scanned_minute = current
+        if start > current:
+            return []
+
+        minutes: list[tuple[str, str]] = []
+        cursor = start
+        while cursor <= current:
+            minutes.append((cursor.strftime("%Y-%m-%d"), cursor.strftime("%H:%M")))
+            cursor += timedelta(minutes=1)
+        return minutes
+
     def enqueue_due(self, now: datetime) -> None:
-        today = now.strftime("%Y-%m-%d")
-        current = now.strftime("%H:%M")
+        window = self.scan_window(now)
+        if not window:
+            return
 
         due: list[Job] = []
-        for target in self.targets:
-            for slot in target.times:
-                if slot > current:
+        for date_text, hhmm in window:
+            for target in self.targets:
+                if hhmm not in target.times:
                     continue
-                key = done_key(today, target.schedule_id, slot)
+                key = done_key(date_text, target.schedule_id, hhmm)
                 if key in self.done:
                     continue
                 # 積んだ時点で済み扱いにして、再読み込みでの二重積みを防ぐ。
                 self.done.add(key)
-                due.append(Job(target=target, slot=slot, key=key))
+                due.append(Job(target=target, slot=hhmm, key=key))
 
         if not due:
             return
 
-        ordered = order_jobs(due, seed=f"{today}|{min(job.slot for job in due)}")
-        self.queue.extend(ordered)
-        self.report_batch(now, ordered)
+        ordered = order_jobs(due, seed=f"{window[0][0]}|{window[0][1]}")
+        accepted, dropped = self.apply_queue_cap(ordered, now)
+        self.queue.extend(accepted)
+        self.report_batch(now, accepted, dropped)
 
-    def report_batch(self, now: datetime, jobs: list[Job]) -> None:
+    def apply_queue_cap(
+        self, jobs: list[Job], now: datetime
+    ) -> tuple[list[Job], list[Job]]:
+        """1つの時刻枠で消化できない量は積まない。"""
+        room = max(0, self.queue_max - len(self.queue))
+        if len(jobs) <= room:
+            return jobs, []
+
+        accepted, dropped = jobs[:room], jobs[room:]
+        self.notifier.alert(
+            "queue_overflow",
+            (
+                f"キューが上限 {self.queue_max} 件に達したため、{len(dropped)} 件を"
+                "積まずに捨てました（当日中の再実行はしません）。"
+                "スケジュールの時刻を分散させるか、QUEUE_MAX_ITEMS と"
+                "実行間隔を見直してください。"
+            ),
+            now=now,
+        )
+        return accepted, dropped
+
+    def report_batch(
+        self, now: datetime, jobs: list[Job], dropped: Optional[list[Job]] = None
+    ) -> None:
         """積んだ件数と消化見込みを出す。枠に収まらないなら警告する。"""
+        if dropped:
+            print(
+                f"[{now:%H:%M}] ! キュー上限 {self.queue_max} 件のため "
+                f"{len(dropped)} 件を積みませんでした。"
+            )
+        if not jobs:
+            return
+
         counts = Counter(job.target.platform for job in jobs)
         breakdown = " / ".join(f"{name} {count}" for name, count in sorted(counts.items()))
         print(f"[{now:%H:%M}] 実行予定に {len(jobs)} 件追加（{breakdown}）")
@@ -491,6 +609,8 @@ class Scheduler:
         print(f"  スケジュール: {len(self.targets)} 件（enabled=true）")
         print(f"  プロキシ   : {'SOAX 経由' if self.use_proxy else '直結（--no-proxy）'}")
         print(f"  実行間隔   : {self.gap_min:.0f}〜{self.gap_max:.0f}秒")
+        print(f"  キュー上限 : {self.queue_max} 件")
+        print(f"  起動直後のキュー: {len(self.queue)} 件")
         print(
             "  アラート   : "
             + ("webhook へ通知" if self.notifier.enabled else "ログのみ（ALERT_WEBHOOK_URL 未設定）")
@@ -519,8 +639,8 @@ class Scheduler:
             now = runner.now_jst()
             minute = now.strftime("%H:%M")
 
-            if minute != self.last_scanned_minute:
-                self.last_scanned_minute = minute
+            if minute != self.last_loop_minute:
+                self.last_loop_minute = minute
                 self.refresh(now)
                 self.enqueue_due(now)
 

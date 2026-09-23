@@ -7,13 +7,16 @@ import {
   DEVICE_MODE_LABELS,
   PLATFORM_MODES,
   PLATFORM_MODE_LABELS,
+  TIME_MODES,
+  TIME_MODE_LABELS,
   devicesFor,
   initialBulkSetupState,
   platformsFor,
   type DeviceMode,
   type PlatformMode,
+  type TimeMode,
 } from "@/server/setup/schema";
-import { parseKeywordLines } from "@/lib/parse";
+import { TIME_OPTIONS, parseKeywordLines, timeSlotsBetween } from "@/lib/parse";
 import type { Keyword, Region } from "@/lib/types";
 import { FormError } from "./form-error";
 import {
@@ -57,7 +60,10 @@ export function BulkSetupForm({
   const [platformMode, setPlatformMode] = useState<PlatformMode>("google");
   const [selectedRegionIds, setSelectedRegionIds] = useState<string[]>([]);
   const [newRegions, setNewRegions] = useState<RegionDraft[]>([]);
+  const [timeMode, setTimeMode] = useState<TimeMode>("fixed");
   const [times, setTimes] = useState<string[]>(["09:00"]);
+  const [spreadStart, setSpreadStart] = useState("06:00");
+  const [spreadEnd, setSpreadEnd] = useState("22:00");
   const [deviceMode, setDeviceMode] = useState<DeviceMode>("pc");
 
   const keywordIdByKey = useMemo(() => {
@@ -109,9 +115,19 @@ export function BulkSetupForm({
     scheduleKeySet,
   ]);
 
+  const spreadSlots = useMemo(
+    () => timeSlotsBetween(spreadStart, spreadEnd),
+    [spreadStart, spreadEnd],
+  );
+  // 1枠あたり何件になるか。偏りの目安として出す。
+  const perSlot =
+    spreadSlots.length > 0 ? Math.ceil(toCreate / spreadSlots.length) : 0;
+
+  const timesReady = timeMode === "fixed" ? times.length > 0 : spreadSlots.length > 0;
+
   const regionCount = selectedRegionIds.length + filledNewRegions.length;
   const canSubmit =
-    keywords.length > 0 && regionCount > 0 && times.length > 0 && toCreate > 0;
+    keywords.length > 0 && regionCount > 0 && timesReady && toCreate > 0;
 
   function updateDraft(key: string, patch: Partial<RegionDraft>) {
     setNewRegions((drafts) =>
@@ -131,7 +147,9 @@ export function BulkSetupForm({
     const lines = [
       `この内容で ${toCreate} 件のスケジュールを作成します。`,
       `キーワード ${keywords.length} 件 × 検索エンジン ${platforms.length} × 地域 ${regionCount} 件 × デバイス ${devices.length}`,
-      `時刻: ${times.join(", ")}`,
+      timeMode === "fixed"
+        ? `時刻: ${times.join(", ")}（全件同じ）`
+        : `時刻: ${spreadStart}〜${spreadEnd} の ${spreadSlots.length} 枠に分散（1枠あたり最大 ${perSlot} 件）`,
     ];
     if (toSkip > 0) lines.push(`（既に登録済みの ${toSkip} 件はスキップします）`);
     lines.push("", "よろしいですか？");
@@ -294,7 +312,79 @@ export function BulkSetupForm({
           3. スケジュール設定
         </h2>
 
-        <TimePicker name="times" times={times} onChange={setTimes} />
+        <fieldset>
+          <legend className={labelClass}>時刻の決め方</legend>
+          <div className="flex flex-wrap gap-4">
+            {TIME_MODES.map((mode) => (
+              <label key={mode} className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="time_mode"
+                  value={mode}
+                  checked={timeMode === mode}
+                  onChange={() => setTimeMode(mode)}
+                />
+                {TIME_MODE_LABELS[mode]}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        <div className="mt-4">
+          {timeMode === "fixed" ? (
+            <>
+              <TimePicker name="times" times={times} onChange={setTimes} />
+              <p className="mt-1 text-xs text-neutral-500">
+                作成するスケジュールすべてに同じ時刻が入ります。件数が多いと
+                同じ時刻に集中して、計測が後ろにずれ込みます。
+              </p>
+            </>
+          ) : (
+            <>
+              <span className={labelClass}>分散する時間帯（15分刻み）</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  name="spread_start"
+                  value={spreadStart}
+                  onChange={(event) => setSpreadStart(event.target.value)}
+                  aria-label="開始時刻"
+                  className={`${inputClass} w-32`}
+                >
+                  {TIME_OPTIONS.map((time) => (
+                    <option key={time} value={time}>
+                      {time}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-sm text-neutral-500">〜</span>
+                <select
+                  name="spread_end"
+                  value={spreadEnd}
+                  onChange={(event) => setSpreadEnd(event.target.value)}
+                  aria-label="終了時刻"
+                  className={`${inputClass} w-32`}
+                >
+                  {TIME_OPTIONS.map((time) => (
+                    <option key={time} value={time}>
+                      {time}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {spreadSlots.length === 0 ? (
+                <p className="mt-1 text-sm text-red-600">
+                  終了時刻は開始時刻と同じか、それより後にしてください。
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-neutral-500">
+                  {spreadSlots.length} 枠（{spreadSlots[0]} 〜{" "}
+                  {spreadSlots[spreadSlots.length - 1]}）に均等に割り振ります。
+                  {toCreate > 0 ? ` 1枠あたり最大 ${perSlot} 件。` : ""}
+                </p>
+              )}
+            </>
+          )}
+        </div>
 
         <fieldset className="mt-4">
           <legend className={labelClass}>デバイス</legend>
@@ -335,6 +425,11 @@ export function BulkSetupForm({
             うち {toSkip} 件は既に登録済みのためスキップします。
           </p>
         ) : null}
+        <p className="mt-1 text-sm text-neutral-500">
+          {timeMode === "fixed"
+            ? `時刻: ${times.join(", ") || "未設定"}（全件同じ）`
+            : `時刻: ${spreadStart}〜${spreadEnd} の ${spreadSlots.length} 枠に分散`}
+        </p>
 
         <div className="mt-4">
           <button

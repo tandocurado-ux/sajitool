@@ -28,6 +28,9 @@ services:
         value: "60"
       - key: RUN_INTERVAL_MAX_SECONDS
         value: "180"
+      # キューに積む上限。超えた分は積まずに捨てる。
+      - key: QUEUE_MAX_ITEMS
+        value: "60"
       - key: SOAX_ENDPOINT
         value: proxy.soax.com:1337
       - key: SOAX_COUNTRY

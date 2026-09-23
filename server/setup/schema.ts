@@ -1,4 +1,10 @@
-import { parseKeywordLines, parseTimes, type ParseResult } from "@/lib/parse";
+import {
+  TIME_OPTIONS,
+  parseKeywordLines,
+  parseTimes,
+  timeSlotsBetween,
+  type ParseResult,
+} from "@/lib/parse";
 import {
   buildRegionLabel,
   findMunicipality,
@@ -32,6 +38,15 @@ export function devicesFor(mode: DeviceMode): Device[] {
   return mode === "both" ? ["pc", "mobile"] : [mode];
 }
 
+export type TimeMode = "fixed" | "spread";
+
+export const TIME_MODES: TimeMode[] = ["fixed", "spread"];
+
+export const TIME_MODE_LABELS: Record<TimeMode, string> = {
+  fixed: "全件同じ時刻",
+  spread: "時間帯に自動分散",
+};
+
 export type NewRegionDraft = {
   label: string;
   prefecture: string | null;
@@ -46,7 +61,11 @@ export type BulkSetupInput = {
   platforms: Platform[];
   regionIds: string[];
   newRegions: NewRegionDraft[];
+  timeMode: TimeMode;
+  /** timeMode === "fixed" のとき、全スケジュールに入れる時刻。 */
   times: string[];
+  /** timeMode === "spread" のとき、均等に割り振る15分刻みの枠。 */
+  spreadSlots: string[];
   devices: Device[];
 };
 
@@ -165,8 +184,29 @@ export function parseBulkSetupInput(
     return { ok: false, error: "デバイスを選択してください。" };
   }
 
-  const times = parseTimes(String(formData.get("times") ?? ""));
-  if (!times.ok) return times;
+  const timeMode = String(formData.get("time_mode") ?? "fixed") as TimeMode;
+  if (!TIME_MODES.includes(timeMode)) {
+    return { ok: false, error: "時刻の指定方法を選択してください。" };
+  }
+
+  let times: string[] = [];
+  let spreadSlots: string[] = [];
+
+  if (timeMode === "fixed") {
+    const parsed = parseTimes(String(formData.get("times") ?? ""));
+    if (!parsed.ok) return parsed;
+    times = parsed.data;
+  } else {
+    const start = String(formData.get("spread_start") ?? "").trim();
+    const end = String(formData.get("spread_end") ?? "").trim();
+    if (!TIME_OPTIONS.includes(start) || !TIME_OPTIONS.includes(end)) {
+      return { ok: false, error: "分散する時間帯の開始・終了を選んでください。" };
+    }
+    spreadSlots = timeSlotsBetween(start, end);
+    if (spreadSlots.length === 0) {
+      return { ok: false, error: "終了時刻は開始時刻と同じか、それより後にしてください。" };
+    }
+  }
 
   const regionIds = formData
     .getAll("region_ids")
@@ -192,7 +232,9 @@ export function parseBulkSetupInput(
         platforms: platformsFor(platformMode),
         regionIds,
         newRegions: newRegions.data.regions,
-        times: times.data,
+        timeMode,
+        times,
+        spreadSlots,
         devices: devicesFor(deviceMode),
       },
       warnings: newRegions.data.warnings,

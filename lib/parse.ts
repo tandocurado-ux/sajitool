@@ -72,3 +72,32 @@ export const TIME_OPTIONS: string[] = Array.from({ length: 96 }, (_, index) => {
   const minute = (index % 4) * 15;
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 });
+
+/** start〜end（どちらも TIME_OPTIONS の値）の15分刻み枠を返す。 */
+export function timeSlotsBetween(start: string, end: string): string[] {
+  const from = TIME_OPTIONS.indexOf(start);
+  const to = TIME_OPTIONS.indexOf(end);
+  if (from < 0 || to < 0 || to < from) return [];
+  return TIME_OPTIONS.slice(from, to + 1);
+}
+
+function gcd(a: number, b: number): number {
+  return b === 0 ? a : gcd(b, a % b);
+}
+
+/**
+ * 枠を1つずつ順に使うと、同じキーワードの数パターンが隣り合う枠に固まる。
+ * 枠数と互いに素な歩幅で飛ばすと、全枠を均等に使いつつ離して配置できる。
+ */
+export function spreadStride(slotCount: number, groupSize = 4): number {
+  if (slotCount <= 2) return 1;
+  let stride = Math.max(1, Math.round(slotCount / groupSize));
+  while (stride > 1 && gcd(stride, slotCount) !== 1) stride -= 1;
+  return Math.max(1, stride);
+}
+
+/** index 番目のスケジュールに割り当てる時刻枠。 */
+export function assignSpreadSlot(index: number, slots: string[]): string {
+  if (slots.length === 0) return "";
+  return slots[(index * spreadStride(slots.length)) % slots.length];
+}
