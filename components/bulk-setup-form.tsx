@@ -1,16 +1,14 @@
 "use client";
 
 import { useActionState, useMemo, useState } from "react";
-import {
-  bulkCreateSchedules,
-  initialBulkSetupState,
-} from "@/server/setup/actions";
+import { bulkCreateSchedules } from "@/server/setup/actions";
 import {
   DEVICE_MODES,
   DEVICE_MODE_LABELS,
   PLATFORM_MODES,
   PLATFORM_MODE_LABELS,
   devicesFor,
+  initialBulkSetupState,
   platformsFor,
   type DeviceMode,
   type PlatformMode,

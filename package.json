@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "check:data": "node scripts/check-municipalities.mjs"
+    "check:data": "node scripts/check-municipalities.mjs",
+    "check:actions": "node scripts/check-server-actions.mjs",
+    "check": "npm run typecheck && npm run lint && npm run check:data && npm run check:actions"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

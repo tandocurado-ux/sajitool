@@ -199,3 +199,34 @@ export function parseBulkSetupInput(
     },
   };
 }
+
+// --------------------------------------------------------------------------
+// 一括登録の実行結果
+// --------------------------------------------------------------------------
+//
+// これらは Client Component からも読むので、必ず "use server" ではない
+// このファイルに置く。"use server" ファイルは async 関数しかエクスポートできず、
+// 定数を置くと Server Reference（関数）に化けてしまう。
+
+export type BulkSetupSummary = {
+  keywordsCreated: number;
+  keywordsSkipped: number;
+  regionsCreated: number;
+  schedulesCreated: number;
+  schedulesSkipped: number;
+};
+
+export type BulkSetupState = {
+  error: string | null;
+  warnings: string[];
+  summary: BulkSetupSummary | null;
+  /** 途中で失敗したとき、どこまで作られたかを伝える。 */
+  progress: string | null;
+};
+
+export const initialBulkSetupState: BulkSetupState = {
+  error: null,
+  warnings: [],
+  summary: null,
+  progress: null,
+};

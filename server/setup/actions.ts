@@ -4,30 +4,12 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getUserFrom } from "@/server/auth/queries";
 import { isClientOwned } from "@/server/clients/queries";
-import { parseBulkSetupInput } from "./schema";
-
-export type BulkSetupSummary = {
-  keywordsCreated: number;
-  keywordsSkipped: number;
-  regionsCreated: number;
-  schedulesCreated: number;
-  schedulesSkipped: number;
-};
-
-export type BulkSetupState = {
-  error: string | null;
-  warnings: string[];
-  summary: BulkSetupSummary | null;
-  /** 途中で失敗したとき、どこまで作られたかを伝える。 */
-  progress: string | null;
-};
-
-export const initialBulkSetupState: BulkSetupState = {
-  error: null,
-  warnings: [],
-  summary: null,
-  progress: null,
-};
+import {
+  initialBulkSetupState,
+  parseBulkSetupInput,
+  type BulkSetupState,
+  type BulkSetupSummary,
+} from "./schema";
 
 const SEP = "\u0000";
 
