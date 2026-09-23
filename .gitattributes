@@ -1,0 +1,4 @@
+# Linux コンテナの中で実行するファイルは必ず LF にする。
+# CRLF が混ざると #!/bin/sh を解釈できず、コンテナが起動しなくなる。
+*.sh text eol=lf
+engine/Dockerfile text eol=lf
