@@ -19,6 +19,7 @@ runner.py 経由でそのまま呼ぶ。検索レシピ自体には一切手を�
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import signal
 import sys
@@ -33,6 +34,7 @@ from dotenv import load_dotenv
 ENGINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ENGINE_DIR))
 
+import alerts  # noqa: E402
 import device as dev  # noqa: E402
 import runner  # noqa: E402
 from db import (  # noqa: E402
@@ -49,6 +51,9 @@ MAX_GAP_SECONDS = 90
 
 # 起動時に表示する「今日の残り予定」の最大行数。
 MAX_PLAN_LINES = 20
+
+# アラート判定のためにメモリへ残す実行履歴の長さ。
+HISTORY_HOURS = 25
 
 
 @dataclass(frozen=True)
@@ -95,8 +100,12 @@ class Scheduler:
         self.targets: list[ScheduleTarget] = []
         self.done: set[str] = set()
         self.queue: list[Job] = []
-        self.history: list[tuple[datetime, str]] = []
+        self.history: list[alerts.ExecutionRecord] = []
+        self.consecutive_errors: dict[str, int] = {}
+        self.notifier = alerts.Notifier(os.environ.get("ALERT_WEBHOOK_URL"))
 
+        self.started_at: Optional[datetime] = None
+        self.last_daily_date: Optional[str] = None
         self.stopping = False
         self.next_allowed_at = 0.0  # time.monotonic() ベース
         self.last_scanned_minute: Optional[str] = None
@@ -115,7 +124,13 @@ class Scheduler:
             )
 
     def restore_from_runs(self, now: datetime) -> int:
-        """当日すでに実行済みの枠を runs から復元する。"""
+        """当日すでに実行済みの枠を runs から復元する。
+
+        返すのは「当日の runs と対応づいた予定枠の数」。
+        起動前の枠は先に done 済みなので、ここで新たに加わるのは
+        同じ分に再起動したときだけだが、ログには実態を出したいので
+        既に done でも数える。
+        """
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         try:
             rows = list_runs_since(self.sb, midnight)
@@ -124,6 +139,7 @@ class Scheduler:
             return 0
 
         by_schedule = {target.schedule_id: target for target in self.targets}
+        matched: set[str] = set()
         restored = 0
         for row in rows:
             target = by_schedule.get(str(row.get("schedule_id")))
@@ -139,9 +155,10 @@ class Scheduler:
             if slot is None:
                 continue
             key = done_key(now.strftime("%Y-%m-%d"), target.schedule_id, slot)
-            if key not in self.done:
-                self.done.add(key)
+            if key not in matched:
+                matched.add(key)
                 restored += 1
+            self.done.add(key)
         return restored
 
     def bootstrap(self, now: datetime) -> int:
@@ -235,7 +252,20 @@ class Scheduler:
         except Exception as caught:  # noqa: BLE001 - 記録に失敗しても続行する
             print(f"  ! runs への記録に失敗しました: {caught}")
 
-        self.history.append((run_at, outcome.status))
+        self.history.append(
+            alerts.ExecutionRecord(
+                at=run_at,
+                schedule_id=job.target.schedule_id,
+                status=outcome.status,
+            )
+        )
+        # 同じスケジュールが連続で失敗していないかを追う。
+        if outcome.status == "error":
+            self.consecutive_errors[job.target.schedule_id] = (
+                self.consecutive_errors.get(job.target.schedule_id, 0) + 1
+            )
+        else:
+            self.consecutive_errors.pop(job.target.schedule_id, None)
 
     # ------------------------------------------------------------------
     # 集計ログ
@@ -251,7 +281,7 @@ class Scheduler:
         self.last_summary_hour = hour_key
 
         cutoff = now - timedelta(hours=1)
-        recent = [status for (at, status) in self.history if at >= cutoff]
+        recent = [record.status for record in self.history if record.at >= cutoff]
         counts = {"ok": 0, "blocked": 0, "error": 0}
         for status in recent:
             if status in counts:
@@ -262,9 +292,88 @@ class Scheduler:
             f"ok {counts['ok']} / blocked {counts['blocked']} / error {counts['error']}"
         )
 
-        # 2時間より古い履歴は捨てる。
-        keep_from = now - timedelta(hours=2)
-        self.history = [item for item in self.history if item[0] >= keep_from]
+        keep_from = now - timedelta(hours=HISTORY_HOURS)
+        self.history = [record for record in self.history if record.at >= keep_from]
+
+        self.check_alerts(now)
+
+    # ------------------------------------------------------------------
+    # アラート
+    # ------------------------------------------------------------------
+
+    def describe_schedule(self, schedule_id: str) -> str:
+        for target in self.targets:
+            if target.schedule_id == schedule_id:
+                return runner.describe_target(target)
+        return schedule_id
+
+    def expected_between(self, start: datetime, end: datetime) -> int:
+        """その期間に実行予定が何件あったかを数える。"""
+        count = 0
+        for target in self.targets:
+            for slot in target.times:
+                try:
+                    hour, minute = int(slot[:2]), int(slot[3:5])
+                except (ValueError, IndexError):
+                    continue
+                for day_offset in (0, -1):
+                    moment = (end + timedelta(days=day_offset)).replace(
+                        hour=hour, minute=minute, second=0, microsecond=0
+                    )
+                    if start <= moment <= end:
+                        count += 1
+                        break
+        return count
+
+    def check_alerts(self, now: datetime) -> None:
+        window_start = now - timedelta(hours=alerts.WINDOW_HOURS)
+        # 起動前の予定で「実行0件」と誤検知しないよう、窓は起動時刻以降に限る。
+        if self.started_at is not None and self.started_at > window_start:
+            window_start = self.started_at
+
+        found = alerts.evaluate_alerts(
+            now=now,
+            history=self.history,
+            expected_in_window=self.expected_between(window_start, now),
+            consecutive_errors=self.consecutive_errors,
+            describe=self.describe_schedule,
+        )
+        for alert in found:
+            self.notifier.alert(alert.key, alert.message, now=now)
+
+    def daily_counts(self, now: datetime) -> dict[str, int]:
+        """当日の実行結果。再起動をまたいでも正しくなるよう runs から数える。"""
+        counts = {"ok": 0, "blocked": 0, "error": 0}
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        try:
+            for row in list_runs_since(self.sb, midnight):
+                run_at = parse_run_at(row.get("run_at", ""))
+                if run_at is None:
+                    continue
+                if run_at.astimezone(runner.JST).date() != now.date():
+                    continue
+                status = str(row.get("status"))
+                if status in counts:
+                    counts[status] += 1
+            return counts
+        except Exception as caught:  # noqa: BLE001
+            print(f"  ! 日次サマリの集計に失敗しました（履歴で代用）: {caught}")
+
+        for record in self.history:
+            if record.at.date() == now.date() and record.status in counts:
+                counts[record.status] += 1
+        return counts
+
+    def maybe_daily_summary(self, now: datetime) -> None:
+        today = now.strftime("%Y-%m-%d")
+        if self.last_daily_date == today:
+            return
+        if now.hour < alerts.DAILY_SUMMARY_HOUR:
+            return
+        self.last_daily_date = today
+        self.notifier.info(
+            alerts.daily_summary_message(now, self.daily_counts(now)), now=now
+        )
 
     # ------------------------------------------------------------------
     # メインループ
@@ -275,8 +384,14 @@ class Scheduler:
         print(f"  現在時刻   : {now:%Y-%m-%d %H:%M:%S}")
         print(f"  スケジュール: {len(self.targets)} 件（enabled=true）")
         print(f"  プロキシ   : {'SOAX 経由' if self.use_proxy else '直結（--no-proxy）'}")
+        print(
+            "  アラート   : "
+            + ("webhook へ通知" if self.notifier.enabled else "ログのみ（ALERT_WEBHOOK_URL 未設定）")
+        )
         if restored > 0:
-            print(f"  当日実行済み: {restored} 件を runs から復元（再実行しません）")
+            print(
+                f"  当日実行済み: {restored} 件（runs から復元。この枠は再実行しません）"
+            )
 
         plan = self.remaining_today(now)
         print(f"  今日の残り予定: {len(plan)} 件")
@@ -289,6 +404,7 @@ class Scheduler:
 
     def run(self) -> int:
         now = runner.now_jst()
+        self.started_at = now
         restored = self.bootstrap(now)
         self.print_startup(now, restored)
 
@@ -302,6 +418,7 @@ class Scheduler:
                 self.enqueue_due(now)
 
             self.maybe_hourly_summary(now)
+            self.maybe_daily_summary(now)
 
             if self.queue and time.monotonic() >= self.next_allowed_at:
                 job = self.queue.pop(0)
@@ -350,8 +467,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="SOAX を使わず直結で実行する（exit_ip は null になる）",
     )
-    parser.add_argument("--headless", action="store_true", help="ヘッドレスで起動する")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="ヘッドレスで起動する（環境変数 ENGINE_HEADLESS=1 でも有効）",
+    )
     return parser.parse_args(argv)
+
+
+def headless_from_env() -> bool:
+    return os.environ.get("ENGINE_HEADLESS", "").strip().lower() in ("1", "true", "yes")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -365,7 +490,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"エラー: {caught}", file=sys.stderr)
         return 2
 
-    scheduler = Scheduler(sb, use_proxy=not args.no_proxy, headless=args.headless)
+    scheduler = Scheduler(
+        sb,
+        use_proxy=not args.no_proxy,
+        headless=args.headless or headless_from_env(),
+    )
     install_signal_handlers(scheduler)
 
     try:

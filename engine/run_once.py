@@ -13,6 +13,7 @@ DB を触らずにブラウザのレシピだけ確認したいときは --dry-r
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,7 +63,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--lat", type=float, help="--dry-run 時の緯度")
     parser.add_argument("--lng", type=float, help="--dry-run 時の経度")
     parser.add_argument("--prefecture", help="--dry-run 時の SOAX exit 地域指定用")
-    parser.add_argument("--headless", action="store_true", help="ヘッドレスで起動する")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="ヘッドレスで起動する（環境変数 ENGINE_HEADLESS=1 でも有効）",
+    )
     parser.add_argument(
         "--debug-screenshot",
         metavar="DIR",
@@ -76,6 +81,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     elif not args.schedule_id:
         parser.error("--schedule-id を指定してください。")
     return args
+
+
+def headless_from_env() -> bool:
+    return os.environ.get("ENGINE_HEADLESS", "").strip().lower() in ("1", "true", "yes")
 
 
 def _screenshot_path(args: argparse.Namespace, label: str) -> Optional[Path]:
@@ -103,7 +112,7 @@ def run_dry(args: argparse.Namespace) -> int:
         device=args.device,
         prefecture=args.prefecture,
         use_proxy=not args.no_proxy,
-        headless=args.headless,
+        headless=args.headless or headless_from_env(),
         screenshot_path=_screenshot_path(
             args, f"dryrun-{args.platform}-{args.device}"
         ),
@@ -136,7 +145,7 @@ def run_scheduled(args: argparse.Namespace) -> int:
     outcome = runner.run_search_for_target(
         target,
         use_proxy=not args.no_proxy,
-        headless=args.headless,
+        headless=args.headless or headless_from_env(),
         screenshot_path=_screenshot_path(
             args, f"{target.schedule_id}-{target.platform}-{target.device}"
         ),

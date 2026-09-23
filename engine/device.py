@@ -282,6 +282,12 @@ async def start_browser(
         "--no-first-run",
         "--no-default-browser-check",
     ]
+    # コンテナで動かすときの追加オプション（--no-sandbox など）。
+    # レシピの必須条件（--lang=ja / Accept-Language / TZ）は上で固定してあるので、
+    # ここで足せるのは環境差を吸収するためのものだけ。
+    browser_args.extend(
+        arg for arg in os.environ.get("CHROME_EXTRA_ARGS", "").split() if arg
+    )
     if proxy:
         browser_args.append(f"--proxy-server={proxy.server}")
 

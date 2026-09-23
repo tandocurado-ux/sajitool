@@ -200,6 +200,102 @@ python engine/scheduler.py --no-proxy # 直結（ローカル確認用）
 
 地域の緯度経度が日本の範囲外のときは実行前に警告を出す（止めはしない）。
 
+### 異常の早期検知（alerts.py）
+
+検知が遅れて計測を取りこぼすのを防ぐため、毎時の集計時に次を判定して通知する。
+通知先は `ALERT_WEBHOOK_URL`（Slack / Discord 互換の incoming webhook）。
+**未設定でも判定は動き、標準出力には必ず残る。**
+
+| 条件 | 内容 |
+| ---- | ---- |
+| ブロック率 | 直近3時間の `blocked` が 30% 超（実行5件以上のとき） |
+| 停止・詰まり | 直近3時間、実行予定があったのに実行が0件 |
+| 連続失敗 | 同じスケジュールが3回連続で `error` |
+
+- 同じ条件の通知は **6時間に1回**まで（連打防止）。連続失敗はスケジュール単位で数える
+- 起動直後に「実行0件」で誤検知しないよう、判定の窓は起動時刻以降に限る
+- 毎日 **21:00 JST** に当日の実行数 / ok / blocked / error を1行通知する
+  （集計は `runs` から取るので、再起動をまたいでも正しい）
+
+## 常駐運用（Render / フェーズ2c）
+
+PC を閉じても時刻どおりに動くよう、`engine/` を Docker 化して Render の
+**Background Worker** として常駐させる。HTTP は受けないのでヘルスチェックは不要で、
+ログはそのまま Render の Logs に出る。
+
+### イメージの中身
+
+- `python:3.12-slim` + **google-chrome-stable**（Chromium ではレシピが通らない）
+- `fonts-noto-cjk`（日本語表示）、`xvfb`（仮想ディスプレイ）
+- `TZ=Asia/Tokyo`
+
+ヘッドレス Chrome は検知されやすく、実証済みのレシピは実ブラウザ前提で通してあるため、
+**既定では Xvfb 上で通常の Chrome を起動する**（`docker-entrypoint.sh`）。
+`ENGINE_HEADLESS=1` を渡すと Xvfb を使わず `--headless` で動く。
+
+コンテナ差を吸収する起動オプションは `CHROME_EXTRA_ARGS`
+（既定 `--no-sandbox --disable-dev-shm-usage --disable-gpu`）で足している。
+レシピの必須条件（`--lang=ja` / `Accept-Language` / `TZ`）は `device.py` 側で固定。
+
+### ローカルでのビルド・起動
+
+```bash
+# ビルドコンテキストはリポジトリのルート
+docker build -f engine/Dockerfile -t sajitool-engine .
+
+# 起動（engine/.env をそのまま渡す）
+docker run --rm --env-file engine/.env sajitool-engine
+
+# 単発実行だけ試す
+docker run --rm --env-file engine/.env sajitool-engine \
+  python run_once.py --schedule-id <uuid> --no-proxy
+```
+
+### Render へのデプロイ
+
+1. リポジトリを push し、Render の **Blueprints → New Blueprint Instance** で
+   `render.yaml` を読み込む（`type: worker` / `runtime: docker` / `plan: starter`）
+2. 作成された Worker の **Environment** に次を設定する（`render.yaml` には値を置かない）
+
+   | 変数 | 必須 | 内容 |
+   | ---- | ---- | ---- |
+   | `SUPABASE_URL` | ○ | Supabase の Project URL |
+   | `SUPABASE_SERVICE_ROLE_KEY` | ○ | service_role キー。**公開厳禁** |
+   | `SOAX_USER` | ○ | SOAX のパッケージ名（例 `package-000000`） |
+   | `SOAX_PASS` | ○ | SOAX のパスワード |
+   | `SOAX_ENDPOINT` | ○ | 例 `proxy.soax.com:5000` |
+   | `ALERT_WEBHOOK_URL` | 任意 | Slack / Discord の incoming webhook。未設定ならログのみ |
+   | `SOAX_OPTION_SEPARATOR` | 任意 | 既定 `-` |
+   | `SOAX_COUNTRY` | 任意 | 既定 `jp` |
+   | `SOAX_REGION_OPTION` | 任意 | 既定 `region` |
+   | `SOAX_SESSION_LENGTH` | 任意 | 既定 `600` |
+
+   `TZ` / `CHROME_PATH` / `CHROME_EXTRA_ARGS` / `DISPLAY` は Dockerfile で設定済み。
+
+3. デプロイ完了後、Logs を確認する
+
+### デプロイ後チェックリスト
+
+- [ ] Logs に「スケジューラを起動しました（時刻はすべて JST）。」が出ている
+- [ ] 「現在時刻」が **JST** になっている（UTC ならタイムゾーン設定を疑う）
+- [ ] 「スケジュール: N 件（enabled=true）」が想定どおりの件数
+- [ ] 「アラート: webhook へ通知」になっている（ログのみなら `ALERT_WEBHOOK_URL` 未設定）
+- [ ] 「今日の残り予定」に直近の予定が並んでいる
+- [ ] 最初の実行時刻に「実行予定に追加 → 実行開始 → 結果 → runs.id」が流れる
+- [ ] その結果が `/dashboard` と `/clients/[id]` の実行履歴タブに出る
+- [ ] `runs.exit_ip` に SOAX の住宅 IP が入っている（`blocked` が続くならここを疑う）
+- [ ] 手動で Redeploy し、**同じ時刻の分が二重実行されない**こと
+      （起動ログの「当日実行済み: N 件（runs から復元…）」で確認できる）
+- [ ] 21:00 JST に日次サマリが通知される
+
+### 運用メモ
+
+- `plan: starter`（512MB）は Chrome を1つ動かすには余裕が少ない。OOM で落ちるようなら
+  `standard` に上げる。画像・メディア・フォントは CDP で落としているので通常は足りる
+- Render の Worker は再デプロイのたびにプロセスが入れ替わるが、当日分は `runs` から
+  復元するので二重実行にはならない。ただし**再起動中に来た時刻は実行されない**
+  （過去分のバックフィルはしない仕様）
+
 ### runs への記録
 
 実行1回につき `runs` に1行入る。
@@ -217,13 +313,17 @@ python engine/scheduler.py --no-proxy # 直結（ローカル確認用）
 
 ```
 engine/
-  scheduler.py      定時実行の常駐プロセス（フェーズ2b）
-  run_once.py       単発実行（schedules を1件読み → 検索 → runs insert）
-  runner.py         両者が共有する実行・表示・記録
-  search_google.py  Google レシピ（本番実証済み）
-  search_yahoo.py   Yahoo! レシピ（実測しながら調整する初版）
-  device.py         pc / mobile の記述子と、両レシピ共通のブラウザ context
-  db.py             Supabase（schedules 読み込み + runs insert）
+  scheduler.py          定時実行の常駐プロセス（フェーズ2b）
+  run_once.py           単発実行（schedules を1件読み → 検索 → runs insert）
+  runner.py             両者が共有する実行・表示・記録
+  alerts.py             異常検知の判定と webhook 通知
+  search_google.py      Google レシピ（本番実証済み）
+  search_yahoo.py       Yahoo! レシピ（実測しながら調整する初版）
+  device.py             pc / mobile の記述子と、両レシピ共通のブラウザ context
+  db.py                 Supabase（schedules 読み込み + runs insert）
+  Dockerfile            常駐用イメージ（Chrome + 日本語フォント + Xvfb）
+  docker-entrypoint.sh  Xvfb を起動してから scheduler を exec する
+render.yaml             Render の Background Worker 定義
 ```
 
 ### 検索レシピ（変更禁止）
