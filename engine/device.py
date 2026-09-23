@@ -131,6 +131,8 @@ def resolve_device(device: str) -> DeviceProfile:
 #   - session の値は英数字のみ。ハイフン等が入るとトークン区切りと解釈されて壊れる
 #   - onerror トークンは付けない（onerror-rotate は無効で 400 になる）
 #   - region は英語小文字（osaka, aichi ...）
+#   - network は res（住宅）/ mob（モバイル）。契約パッケージで両方有効なら
+#     Google だけ mob に逃がせる（SOAX_GOOGLE_NETWORK）
 PREFECTURE_TO_SOAX_REGION: dict[str, str] = {
     "北海道": "hokkaido",
     "青森県": "aomori",
@@ -273,8 +275,9 @@ def build_proxy_config(
     パッケージの識別はパスワードで行われるため、ユーザー名側には
     オプション文字列だけを入れる（package ID は不要）。
 
-    Google だけ検知されるケースの切り分け用に、platform="google" のときは
-    SOAX_GOOGLE_OMIT_REGION / SOAX_GOOGLE_ROTATE_SECONDS で上書きできる。
+    Google だけ検知されるケースへの対処として、platform="google" のときは
+    SOAX_GOOGLE_NETWORK / SOAX_GOOGLE_OMIT_REGION / SOAX_GOOGLE_ROTATE_SECONDS
+    で上書きできる。Yahoo! 側の組み立ては影響を受けない。
     """
     password = os.environ.get("SOAX_PASS", "").strip()
     if not password:
@@ -290,10 +293,17 @@ def build_proxy_config(
     region = soax_region_for(prefecture) if soax_region_enabled() else None
 
     if platform == "google":
+        # 住宅IPだと Google に弾かれ続けるため、Google だけモバイルプール
+        # （network-mob）に逃がせるようにしてある。未設定なら SOAX_NETWORK に従う。
+        google_network = os.environ.get("SOAX_GOOGLE_NETWORK", "").strip()
+        if google_network:
+            network = google_network
+
         # region 絞りでノード品質が落ちている可能性の切り分け。
         # 地点は geolocation override で決まるので、外しても順位への実害はない。
         if _env_flag("SOAX_GOOGLE_OMIT_REGION"):
             region = None
+
         google_rotate = os.environ.get("SOAX_GOOGLE_ROTATE_SECONDS", "").strip()
         if google_rotate:
             rotate_seconds = google_rotate

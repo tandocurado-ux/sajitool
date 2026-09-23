@@ -35,7 +35,11 @@ services:
       - key: SOAX_REGION_ENABLED
         value: "1"
 
-      # --- Google だけ検知されるときの切り分けつまみ（既定は無効）---
+      # --- Google だけ検知されるときの対処（既定は無効）---
+      # Google のときだけ使うプール。res=住宅 / mob=モバイル。
+      # モバイルは帯域単価が高いことがあるので、切り替えたら使用量を見ること。
+      - key: SOAX_GOOGLE_NETWORK
+        value: res
       # 1 で Google のときだけ region を外して country-jp のみにする
       - key: SOAX_GOOGLE_OMIT_REGION
         value: "0"

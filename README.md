@@ -227,17 +227,32 @@ country-jp-region-osaka-network-res-rotate-timed_300-session-<sessionid>
 - `region` は英語小文字（`osaka` / `aichi` …）。変換表は `device.py` の
   `PREFECTURE_TO_SOAX_REGION` にある（47都道府県）
 
-#### Google だけ検知されるときの切り分け
+#### Google だけ検知されるときの対処
 
 直結では通る・SOAX 経由の Yahoo! も通るのに Google だけ `/sorry/` になる場合、
-出口ノードの品質を疑う。Google のときだけ次を効かせられる（既定は無効）。
+住宅IPプールに対する Google の評価を疑う。Google のときだけ次を効かせられる。
+**Yahoo! 側の組み立ては一切変わらない**ので、片方だけ条件を変えて比較できる。
 
-| 変数 | 効果 |
-| ---- | ---- |
-| `SOAX_GOOGLE_OMIT_REGION=1` | Google のときだけ `region` を外して `country-jp` だけで出る。地点は geolocation override で決まるので順位への実害はない |
-| `SOAX_GOOGLE_ROTATE_SECONDS=600` | Google のときだけローテート間隔を長くする（空なら `SOAX_ROTATE_SECONDS`） |
+| 変数 | 既定 | 効果 |
+| ---- | ---- | ---- |
+| `SOAX_GOOGLE_NETWORK` | `res` | Google のときだけ使うプール。`mob` でモバイルIPに逃がす |
+| `SOAX_GOOGLE_OMIT_REGION` | `0` | `1` で Google のときだけ `region` を外して `country-jp` だけで出る。地点は geolocation override で決まるので順位への実害はない |
+| `SOAX_GOOGLE_ROTATE_SECONDS` | （空） | Google のときだけローテート間隔を変える。空なら `SOAX_ROTATE_SECONDS` |
 
-Yahoo! 側の組み立ては変わらないので、片方だけ条件を変えて比較できる。
+3つは併用できる。`SOAX_GOOGLE_NETWORK=mob` + `SOAX_GOOGLE_OMIT_REGION=1` +
+`SOAX_GOOGLE_ROTATE_SECONDS=600` なら Google の接続文字列はこうなる。
+
+```
+country-jp-network-mob-rotate-timed_600-session-<sessionid>
+```
+
+> **モバイルプールは帯域単価が高いことがある。** 住宅IPと同じ感覚で常用せず、
+> 切り替えたら SOAX 側の使用量を確認すること。画像・メディア・フォントは
+> CDP で落としているので1回あたりの転送量は抑えてあるが、実行件数×日数で効いてくる。
+
+`SOAX_GOOGLE_NETWORK` を未設定にすると `SOAX_NETWORK`（既定 `res`）に従う。
+契約パッケージで Residential と Mobile の両方が有効である必要がある
+（接続文字列の `network-res_mob` 表記で確認できる）。
 
 #### blocked 時の自動リトライ
 
@@ -324,6 +339,7 @@ docker run --rm --env-file engine/.env sajitool-engine \
    | `SOAX_NETWORK` | 任意 | 既定 `res`（住宅IP） |
    | `SOAX_ROTATE_SECONDS` | 任意 | 既定 `300` |
    | `SOAX_SESSION_ID` | 任意 | session を固定したいときだけ（固定するとリトライが無効になる） |
+   | `SOAX_GOOGLE_NETWORK` | 任意 | 既定 `res`。`mob` で Google のときだけモバイルIP（**単価注意**） |
    | `SOAX_GOOGLE_OMIT_REGION` | 任意 | 既定 `0`。`1` で Google のときだけ region を外す |
    | `SOAX_GOOGLE_ROTATE_SECONDS` | 任意 | Google のときだけローテート間隔を変える |
 
