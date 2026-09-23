@@ -24,6 +24,7 @@ import random
 import signal
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,12 +46,19 @@ from db import (  # noqa: E402
     list_runs_since,
 )
 
-# 毎時0分に全件が固まって連射されるのを避けるための間隔。
-MIN_GAP_SECONDS = 30
-MAX_GAP_SECONDS = 90
+# 実行と実行の間に空ける秒数。RUN_INTERVAL_MIN/MAX_SECONDS で調整できる。
+# 毎時0分に全件が固まって連射されるのを避けるためのもの。
+DEFAULT_RUN_INTERVAL_MIN_SECONDS = 60.0
+DEFAULT_RUN_INTERVAL_MAX_SECONDS = 180.0
+
+# 1つの時刻枠に収まってほしい時間。超えると次の枠に食い込む。
+SLOT_CAPACITY_SECONDS = 3600
 
 # 起動時に表示する「今日の残り予定」の最大行数。
 MAX_PLAN_LINES = 20
+
+# 1回の追加でログに並べる最大行数。
+MAX_BATCH_LINES = 10
 
 # アラート判定のためにメモリへ残す実行履歴の長さ。
 HISTORY_HOURS = 25
@@ -85,6 +93,67 @@ def parse_run_at(value: str) -> Optional[datetime]:
     return parsed
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"! {name} が数値ではありません（{raw}）。既定の {default:.0f} 秒を使います。")
+        return default
+    if value < 0:
+        print(f"! {name} が負の値です（{raw}）。既定の {default:.0f} 秒を使います。")
+        return default
+    return value
+
+
+def run_interval_range() -> tuple[float, float]:
+    """実行間隔の下限・上限（秒）。"""
+    minimum = _env_float("RUN_INTERVAL_MIN_SECONDS", DEFAULT_RUN_INTERVAL_MIN_SECONDS)
+    maximum = _env_float("RUN_INTERVAL_MAX_SECONDS", DEFAULT_RUN_INTERVAL_MAX_SECONDS)
+    if maximum < minimum:
+        print(
+            f"! RUN_INTERVAL_MAX_SECONDS({maximum:.0f}) が MIN({minimum:.0f}) より"
+            "小さいので、上限を下限に揃えます。"
+        )
+        maximum = minimum
+    return minimum, maximum
+
+
+def interleave_by_platform(jobs: list[Job]) -> list[Job]:
+    """google と yahoo を交互に並べる。
+
+    Google への連続アクセス間隔を実質2倍に稼ぐのが狙い。
+    片方しか無ければ順序はそのまま。
+    """
+    buckets: dict[str, list[Job]] = {}
+    for job in jobs:
+        buckets.setdefault(job.target.platform, []).append(job)
+    if len(buckets) < 2:
+        return list(jobs)
+
+    # 件数の多いプラットフォームから取り出して、偏りを後ろに残さない。
+    order = sorted(buckets, key=lambda name: (-len(buckets[name]), name))
+    result: list[Job] = []
+    while any(buckets[name] for name in order):
+        for name in order:
+            if buckets[name]:
+                result.append(buckets[name].pop(0))
+    return result
+
+
+def order_jobs(jobs: list[Job], *, seed: str) -> list[Job]:
+    """同じ時刻枠の順序を毎日入れ替えてから、プラットフォームを交互にする。
+
+    毎日同じ順序・同じ間隔で同じキーワードが飛ぶパターンを崩す。
+    seed は日付ベースなので、同じ日に再起動しても順序は変わらない。
+    """
+    shuffled = list(jobs)
+    random.Random(seed).shuffle(shuffled)
+    return interleave_by_platform(shuffled)
+
+
 def slot_for(times: list[str], hhmm: str) -> Optional[str]:
     """その時刻に対応する予定枠（hhmm 以下で最も遅いもの）を返す。"""
     candidates = [slot for slot in times if slot <= hhmm]
@@ -106,6 +175,8 @@ class Scheduler:
 
         self.started_at: Optional[datetime] = None
         self.last_daily_date: Optional[str] = None
+        self.gap_min, self.gap_max = run_interval_range()
+
         self.stopping = False
         self.next_allowed_at = 0.0  # time.monotonic() ベース
         self.last_scanned_minute: Optional[str] = None
@@ -185,6 +256,7 @@ class Scheduler:
         today = now.strftime("%Y-%m-%d")
         current = now.strftime("%H:%M")
 
+        due: list[Job] = []
         for target in self.targets:
             for slot in target.times:
                 if slot > current:
@@ -194,10 +266,44 @@ class Scheduler:
                     continue
                 # 積んだ時点で済み扱いにして、再読み込みでの二重積みを防ぐ。
                 self.done.add(key)
-                self.queue.append(Job(target=target, slot=slot, key=key))
-                print(
-                    f"[{now:%H:%M}] 実行予定に追加: {slot} {runner.describe_target(target)}"
-                )
+                due.append(Job(target=target, slot=slot, key=key))
+
+        if not due:
+            return
+
+        ordered = order_jobs(due, seed=f"{today}|{min(job.slot for job in due)}")
+        self.queue.extend(ordered)
+        self.report_batch(now, ordered)
+
+    def report_batch(self, now: datetime, jobs: list[Job]) -> None:
+        """積んだ件数と消化見込みを出す。枠に収まらないなら警告する。"""
+        counts = Counter(job.target.platform for job in jobs)
+        breakdown = " / ".join(f"{name} {count}" for name, count in sorted(counts.items()))
+        print(f"[{now:%H:%M}] 実行予定に {len(jobs)} 件追加（{breakdown}）")
+
+        for job in jobs[:MAX_BATCH_LINES]:
+            print(f"    {job.slot}  {runner.describe_target(job.target)}")
+        if len(jobs) > MAX_BATCH_LINES:
+            print(f"    … 他 {len(jobs) - MAX_BATCH_LINES} 件")
+
+        average = (self.gap_min + self.gap_max) / 2
+        estimate = len(jobs) * average
+        print(
+            f"    消化見込み: 約 {estimate / 60:.0f} 分"
+            f"（平均間隔 {average:.0f} 秒 × {len(jobs)} 件。検索そのものの時間は別）"
+        )
+
+        if estimate > SLOT_CAPACITY_SECONDS:
+            slot = min(job.slot for job in jobs)
+            self.notifier.alert(
+                f"slot_overflow:{slot}",
+                (
+                    f"{slot} の枠に {len(jobs)} 件が入り、消化に約 {estimate / 60:.0f} 分"
+                    f"かかる見込みです（1枠 {SLOT_CAPACITY_SECONDS // 60} 分）。"
+                    "次の枠に食い込みます。件数を減らすか実行間隔を詰めてください。"
+                ),
+                now=now,
+            )
 
     def remaining_today(self, now: datetime) -> list[tuple[str, ScheduleTarget]]:
         current = now.strftime("%H:%M")
@@ -384,6 +490,7 @@ class Scheduler:
         print(f"  現在時刻   : {now:%Y-%m-%d %H:%M:%S}")
         print(f"  スケジュール: {len(self.targets)} 件（enabled=true）")
         print(f"  プロキシ   : {'SOAX 経由' if self.use_proxy else '直結（--no-proxy）'}")
+        print(f"  実行間隔   : {self.gap_min:.0f}〜{self.gap_max:.0f}秒")
         print(
             "  アラート   : "
             + ("webhook へ通知" if self.notifier.enabled else "ログのみ（ALERT_WEBHOOK_URL 未設定）")
@@ -425,7 +532,7 @@ class Scheduler:
                 self.execute(job)
                 if self.stopping:
                     break
-                gap = random.uniform(MIN_GAP_SECONDS, MAX_GAP_SECONDS)
+                gap = random.uniform(self.gap_min, self.gap_max)
                 self.next_allowed_at = time.monotonic() + gap
                 if self.queue:
                     print(

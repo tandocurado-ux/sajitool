@@ -23,6 +23,11 @@ services:
         sync: false
 
       # --- 既定値のままで動くもの ---
+      # スケジューラの実行間隔（秒）。1検索ごとにこの範囲の一様ランダムで待つ。
+      - key: RUN_INTERVAL_MIN_SECONDS
+        value: "60"
+      - key: RUN_INTERVAL_MAX_SECONDS
+        value: "180"
       - key: SOAX_ENDPOINT
         value: proxy.soax.com:1337
       - key: SOAX_COUNTRY
