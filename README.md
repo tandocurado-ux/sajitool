@@ -136,7 +136,7 @@ npm run check:data
 - `lib/types.ts` は手書きの行型。Supabase CLI が使えるようになったら
   `npx supabase gen types typescript --project-id <ref>` の生成物に置き換える
 
-## 検索実行エンジン（engine/・フェーズ2a）
+## 検索実行エンジン（engine/）
 
 `schedules` を1件読み、その keyword × region × device × platform で Google または
 Yahoo! の検索を実際に1回実行する「撃つだけ」スクリプト。
@@ -170,6 +170,36 @@ python engine/run_once.py --dry-run --no-proxy \
 `--debug-screenshot <DIR>` を付けるとローカルにスクショを残せる（DB にも Storage にも上げない。
 Yahoo! の実測で画面を確認するためのもの）。
 
+### 定時実行（scheduler.py・フェーズ2b）
+
+`schedules` の `times` どおりに自動実行する常駐プロセス。検索処理は単発実行と同じ実装を
+`runner.py` 経由で呼ぶので、レシピは共通。
+
+```bash
+python engine/scheduler.py            # SOAX 経由
+python engine/scheduler.py --no-proxy # 直結（ローカル確認用）
+```
+
+- 時刻はすべて **JST 固定**（サーバーの TZ 設定に依存しない）
+- 起動時と毎分、`enabled=true` の `schedules` を読み直す
+- `times` が現在の「分」に一致したらキューに積み、**直列に1件ずつ**実行する
+  （Chrome を同時に複数立ち上げない。Google / Yahoo! が混ざっても直列）
+- 実行と実行の間に **30〜90秒のランダム間隔**を空ける（毎時0分の連射を避ける）
+- 同じ `schedule × 時刻` は同じ日に二度実行しない。再起動時は当日の `runs` を読んで復元する
+- 起動より前に過ぎた時刻は実行しない（過去分のバックフィルはしない）
+- 1件が失敗してもプロセスは死なない。`runs` に `error` で記録して次へ進む
+- `Ctrl+C` は実行中の1件を終えてから停止する（もう一度押すと強制終了）
+
+標準出力のログ:
+
+| タイミング | 内容 |
+| ---------- | ---- |
+| 起動時 | 読み込んだスケジュール数、当日の残り実行予定（時刻と KW × 地域 × デバイス × PF） |
+| 実行ごと | 単発実行と同じ内容（結果・件数・`runs.id`） |
+| 毎時0分 | 直近1時間の集計1行（実行 N 件 / ok N / blocked N / error N） |
+
+地域の緯度経度が日本の範囲外のときは実行前に警告を出す（止めはしない）。
+
 ### runs への記録
 
 実行1回につき `runs` に1行入る。
@@ -187,7 +217,9 @@ Yahoo! の実測で画面を確認するためのもの）。
 
 ```
 engine/
-  run_once.py       エントリポイント（schedules 読み → 検索 → runs insert）
+  scheduler.py      定時実行の常駐プロセス（フェーズ2b）
+  run_once.py       単発実行（schedules を1件読み → 検索 → runs insert）
+  runner.py         両者が共有する実行・表示・記録
   search_google.py  Google レシピ（本番実証済み）
   search_yahoo.py   Yahoo! レシピ（実測しながら調整する初版）
   device.py         pc / mobile の記述子と、両レシピ共通のブラウザ context
@@ -215,11 +247,31 @@ engine/
 （検索窓に文字が入っただけの誤成功を防ぐガード）。Yahoo! の判定文字列は
 `search_yahoo.py` の定数にまとめてあり、実測に合わせて調整できる。
 
-### 検証手順
+### 検証手順（単発実行）
 
-1. `--no-proxy` で google × pc を1回。`runs` に `ok` が入ることを確認する
+1. `--no-proxy` で google × pc を1回。`runs` に行が入ることを確認する
 2. google × mobile → yahoo × pc → yahoo × mobile を順に確認する
 3. 最後に SOAX 込み（`--no-proxy` なし）で再確認し、`runs.exit_ip` に住宅 IP が入ることを見る
+
+### 検証手順（定時実行）
+
+1. 画面（`/clients/[id]` のスケジュールタブ、または `/clients/[id]/setup`）から、
+   **数分後の時刻**でスケジュールを1件登録する（`enabled` が有効であること）
+2. `python engine/scheduler.py --no-proxy` を起動する
+3. 起動ログの「今日の残り予定」に、いま登録したスケジュールが出ることを確認する
+4. その時刻になると次の順にログが流れることを確認する
+
+   ```
+   [HH:MM] 実行予定に追加: HH:MM <KW> × <地域> × <device> × <platform>
+   [HH:MM:SS] 実行開始（予定 HH:MM）
+   結果: 判定 / 結果件数 / 最終 URL
+     runs.id    : <uuid>（status=... で記録）
+   ```
+
+5. 画面の `/dashboard` か `/clients/[id]` の実行履歴タブに行が増えていることを確認する
+6. `Ctrl+C` で停止する（実行中なら1件終わってから止まる）
+7. そのまま `scheduler.py` を再起動しても、同じ時刻の分が**二重実行されない**ことを確認する
+   （当日の `runs` から復元するため）
 
 ### 実測状況（2026-09-22 / --no-proxy・自宅 IP）
 
@@ -233,10 +285,16 @@ engine/
 google × mobile はプロキシ無しの固定 IP だと繰り返しブロックされる。SOAX 住宅 IP での
 再確認が必要（手順3）。
 
+2026-09-23: 実スケジュールに対する `run_once.py --schedule-id <id> --no-proxy` で
+`runs` への記録まで確認済み（この回は `blocked` で記録された）。
+
 ### 既知の制約・注意
 
 - `nodriver` は 0.48 以降 `cdp/network.py` に非UTF-8バイトが混入していて import
   できないため、0.47.0 に固定している
+- 社内プロキシやセキュリティソフトが TLS を差し替える環境では、Supabase への接続が
+  `CERTIFICATE_VERIFY_FAILED` になる（Python は OS の証明書ストアを見ないため）。
+  `truststore` を入れてエントリポイントで OS のストアを使うようにしてある
 - モバイル記述子ではマウスクリックだとフォーカスが body に戻されるため、
   `Input.dispatchTouchEvent` でタップしてから入力している
 - 検索窓・結果要素のセレクタは platform × device ごとに候補を並べて順に試す

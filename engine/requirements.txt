@@ -3,3 +3,5 @@
 nodriver==0.47.0
 supabase==2.31.0
 python-dotenv==1.2.3
+# 社内プロキシ等で TLS が差し替わる環境向け。OS の証明書ストアを使う。
+truststore==0.10.4

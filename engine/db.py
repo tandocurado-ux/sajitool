@@ -91,15 +91,36 @@ def fetch_schedule_target(sb: Client, schedule_id: str) -> ScheduleTarget:
         str(schedule["region_id"]),
     )
 
-    times = schedule.get("times") or []
+    return build_target(schedule, keyword, region)
+
+
+def normalize_times(raw: Any) -> list[str]:
+    """Postgres の time[] を "HH:MM" の配列に揃える。
+
+    PostgREST は ["09:00:00"] のような配列で返すが、
+    ドライバによっては "{09:00:00,18:00:00}" の文字列で来ることもある。
+    """
+    times = raw or []
     if isinstance(times, str):
         times = [t.strip() for t in times.strip("{}").split(",") if t.strip()]
+    normalized = []
+    for value in times:
+        text = str(value).strip().strip('"')
+        if len(text) >= 5:
+            text = text[:5]
+        if text:
+            normalized.append(text)
+    return sorted(set(normalized))
 
+
+def build_target(
+    schedule: dict[str, Any], keyword: dict[str, Any], region: dict[str, Any]
+) -> ScheduleTarget:
     return ScheduleTarget(
         schedule_id=str(schedule["id"]),
         device=str(schedule["device"]),
         enabled=bool(schedule.get("enabled", True)),
-        times=[str(t) for t in times],
+        times=normalize_times(schedule.get("times")),
         keyword_id=str(keyword["id"]),
         keyword=str(keyword["keyword"]),
         platform=str(keyword["platform"]),
@@ -111,6 +132,62 @@ def fetch_schedule_target(sb: Client, schedule_id: str) -> ScheduleTarget:
         lat=float(region["lat"]) if region.get("lat") is not None else None,
         lng=float(region["lng"]) if region.get("lng") is not None else None,
     )
+
+
+def _chunked(values: list[str], size: int = 200):
+    for index in range(0, len(values), size):
+        yield values[index : index + size]
+
+
+def list_enabled_schedule_targets(sb: Client) -> list[ScheduleTarget]:
+    """enabled=true のスケジュールを、実行に必要な情報を揃えて返す。
+
+    PostgREST の埋め込みに頼らず3回に分けて引く（FK 定義の有無に依存しない）。
+    service_role で読むので全ユーザー分が対象になる。
+    """
+    schedules = (
+        sb.table("schedules").select("*").eq("enabled", True).execute().data or []
+    )
+    if not schedules:
+        return []
+
+    keyword_ids = sorted({str(row["keyword_id"]) for row in schedules})
+    region_ids = sorted({str(row["region_id"]) for row in schedules})
+
+    keywords: dict[str, dict[str, Any]] = {}
+    for chunk in _chunked(keyword_ids):
+        rows = sb.table("keywords").select("*").in_("id", chunk).execute().data or []
+        for row in rows:
+            keywords[str(row["id"])] = row
+
+    regions: dict[str, dict[str, Any]] = {}
+    for chunk in _chunked(region_ids):
+        rows = sb.table("regions").select("*").in_("id", chunk).execute().data or []
+        for row in rows:
+            regions[str(row["id"])] = row
+
+    targets: list[ScheduleTarget] = []
+    for schedule in schedules:
+        keyword = keywords.get(str(schedule["keyword_id"]))
+        region = regions.get(str(schedule["region_id"]))
+        # キーワードや地域が消えているスケジュールは実行しようがないので飛ばす。
+        if keyword is None or region is None:
+            continue
+        targets.append(build_target(schedule, keyword, region))
+    return targets
+
+
+def list_runs_since(sb: Client, since: datetime) -> list[dict[str, Any]]:
+    """指定時刻以降の runs を返す。再起動時の二重実行防止に使う。"""
+    rows = (
+        sb.table("runs")
+        .select("schedule_id, run_at, status")
+        .gte("run_at", since.astimezone(timezone.utc).isoformat())
+        .order("run_at", desc=False)
+        .execute()
+        .data
+    )
+    return rows or []
 
 
 def record_run(
