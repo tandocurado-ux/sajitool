@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { assignSpreadSlot } from "@/lib/parse";
+import { assignSpreadTimes } from "@/lib/parse";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getUserFrom } from "@/server/auth/queries";
 import { isClientOwned } from "@/server/clients/queries";
@@ -180,7 +180,7 @@ export async function bulkCreateSchedules(
 
   // 自動分散のときは、作る順に15分枠へ均等に割り振る。
   // 枠数と互いに素な歩幅で飛ばすので、同じキーワードの数パターンが
-  // 隣り合う枠に固まらない。
+  // 隣り合う枠に固まらない。回転数ぶんの時刻を1スケジュールに入れる。
   const spreadSlots = input.timeMode === "spread" ? input.spreadSlots : null;
   let assigned = 0;
 
@@ -195,7 +195,7 @@ export async function bulkCreateSchedules(
             continue;
           }
           const times = spreadSlots
-            ? [assignSpreadSlot(assigned, spreadSlots)]
+            ? assignSpreadTimes(assigned, spreadSlots, input.rotations)
             : input.times;
           assigned += 1;
           scheduleRows.push({

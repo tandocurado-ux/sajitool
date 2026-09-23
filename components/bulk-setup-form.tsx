@@ -7,6 +7,7 @@ import {
   DEVICE_MODE_LABELS,
   PLATFORM_MODES,
   PLATFORM_MODE_LABELS,
+  ROTATION_OPTIONS,
   TIME_MODES,
   TIME_MODE_LABELS,
   devicesFor,
@@ -17,6 +18,10 @@ import {
   type TimeMode,
 } from "@/server/setup/schema";
 import { TIME_OPTIONS, parseKeywordLines, timeSlotsBetween } from "@/lib/parse";
+import {
+  SLOT_CAPACITY_SECONDS,
+  averageIntervalFor,
+} from "@/lib/intervals";
 import type { Keyword, Region } from "@/lib/types";
 import { FormError } from "./form-error";
 import {
@@ -63,7 +68,8 @@ export function BulkSetupForm({
   const [timeMode, setTimeMode] = useState<TimeMode>("fixed");
   const [times, setTimes] = useState<string[]>(["09:00"]);
   const [spreadStart, setSpreadStart] = useState("06:00");
-  const [spreadEnd, setSpreadEnd] = useState("22:00");
+  const [spreadEnd, setSpreadEnd] = useState("23:00");
+  const [rotations, setRotations] = useState(1);
   const [deviceMode, setDeviceMode] = useState<DeviceMode>("pc");
 
   const keywordIdByKey = useMemo(() => {
@@ -119,9 +125,13 @@ export function BulkSetupForm({
     () => timeSlotsBetween(spreadStart, spreadEnd),
     [spreadStart, spreadEnd],
   );
-  // 1枠あたり何件になるか。偏りの目安として出す。
-  const perSlot =
-    spreadSlots.length > 0 ? Math.ceil(toCreate / spreadSlots.length) : 0;
+  // 1枠あたり何件になるか、その枠を消化しきれるかの目安。
+  const averageInterval = averageIntervalFor(platforms);
+  const totalRuns = timeMode === "fixed" ? toCreate : toCreate * rotations;
+  const slotCount = timeMode === "fixed" ? times.length : spreadSlots.length;
+  const perSlot = slotCount > 0 ? Math.ceil(totalRuns / slotCount) : 0;
+  const drainSeconds = perSlot * averageInterval;
+  const overCapacity = drainSeconds > SLOT_CAPACITY_SECONDS;
 
   const timesReady = timeMode === "fixed" ? times.length > 0 : spreadSlots.length > 0;
 
@@ -149,8 +159,12 @@ export function BulkSetupForm({
       `キーワード ${keywords.length} 件 × 検索エンジン ${platforms.length} × 地域 ${regionCount} 件 × デバイス ${devices.length}`,
       timeMode === "fixed"
         ? `時刻: ${times.join(", ")}（全件同じ）`
-        : `時刻: ${spreadStart}〜${spreadEnd} の ${spreadSlots.length} 枠に分散（1枠あたり最大 ${perSlot} 件）`,
+        : `時刻: ${spreadStart}〜${spreadEnd} の ${spreadSlots.length} 枠に分散 / 1日 ${rotations} 回`,
+      `1枠あたり最大 ${perSlot} 件、消化見込み 約 ${Math.round(drainSeconds / 60)} 分`,
     ];
+    if (overCapacity) {
+      lines.push("", "⚠ 1枠(60分)で消化しきれません。次の枠に食い込み、超過分は実行されません。");
+    }
     if (toSkip > 0) lines.push(`（既に登録済みの ${toSkip} 件はスキップします）`);
     lines.push("", "よろしいですか？");
 
@@ -341,6 +355,25 @@ export function BulkSetupForm({
             </>
           ) : (
             <>
+              <div className="mb-3">
+                <label htmlFor="spread-rotations" className={labelClass}>
+                  1日の回転数（1スケジュールあたりの計測回数）
+                </label>
+                <select
+                  id="spread-rotations"
+                  name="spread_rotations"
+                  value={rotations}
+                  onChange={(event) => setRotations(Number(event.target.value))}
+                  className={`${inputClass} w-32`}
+                >
+                  {ROTATION_OPTIONS.map((count) => (
+                    <option key={count} value={count}>
+                      1日 {count} 回
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <span className={labelClass}>分散する時間帯（15分刻み）</span>
               <div className="flex flex-wrap items-center gap-2">
                 <select
@@ -379,7 +412,7 @@ export function BulkSetupForm({
                 <p className="mt-1 text-xs text-neutral-500">
                   {spreadSlots.length} 枠（{spreadSlots[0]} 〜{" "}
                   {spreadSlots[spreadSlots.length - 1]}）に均等に割り振ります。
-                  {toCreate > 0 ? ` 1枠あたり最大 ${perSlot} 件。` : ""}
+                  1スケジュールあたり {rotations} 個の時刻が入ります。
                 </p>
               )}
             </>
@@ -428,8 +461,34 @@ export function BulkSetupForm({
         <p className="mt-1 text-sm text-neutral-500">
           {timeMode === "fixed"
             ? `時刻: ${times.join(", ") || "未設定"}（全件同じ）`
-            : `時刻: ${spreadStart}〜${spreadEnd} の ${spreadSlots.length} 枠に分散`}
+            : `時刻: ${spreadStart}〜${spreadEnd} の ${spreadSlots.length} 枠に分散 / 1日 ${rotations} 回`}
         </p>
+
+        {slotCount > 0 && toCreate > 0 ? (
+          <div
+            className={`mt-3 rounded border px-4 py-3 text-sm ${
+              overCapacity
+                ? "border-red-300 bg-red-50 text-red-700"
+                : "border-neutral-200 bg-neutral-50 text-neutral-700"
+            }`}
+          >
+            <p>
+              1日の実行回数 {totalRuns} 回 ／ 1枠あたり最大{" "}
+              <span className="font-semibold">{perSlot} 件</span> ／ 消化見込み{" "}
+              <span className="font-semibold">
+                約 {Math.round(drainSeconds / 60)} 分
+              </span>
+              （平均間隔 {Math.round(averageInterval)} 秒）
+            </p>
+            {overCapacity ? (
+              <p className="mt-1 font-semibold">
+                1枠（{SLOT_CAPACITY_SECONDS / 60} 分）で消化しきれません。
+                時間帯を広げるか回転数を減らすか、キーワード・地域を絞ってください。
+                このままだと超過分は実行されません。
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="mt-4">
           <button

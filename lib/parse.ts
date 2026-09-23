@@ -101,3 +101,26 @@ export function assignSpreadSlot(index: number, slots: string[]): string {
   if (slots.length === 0) return "";
   return slots[(index * spreadStride(slots.length)) % slots.length];
 }
+
+/**
+ * index 番目のスケジュールに割り当てる時刻。rotations 回ぶん返す。
+ *
+ * 基準の枠は互いに素な歩幅で選び、そこから枠数 ÷ 回転数ずつ離す。
+ * 1日3回なら朝・昼・夜のように散る。
+ */
+export function assignSpreadTimes(
+  index: number,
+  slots: string[],
+  rotations: number,
+): string[] {
+  if (slots.length === 0) return [];
+  const count = Math.max(1, Math.min(Math.trunc(rotations), slots.length));
+  const base = (index * spreadStride(slots.length)) % slots.length;
+  const step = Math.floor(slots.length / count);
+
+  const times = new Set<string>();
+  for (let turn = 0; turn < count; turn += 1) {
+    times.add(slots[(base + turn * step) % slots.length]);
+  }
+  return [...times].sort();
+}

@@ -28,7 +28,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from dotenv import load_dotenv
 
@@ -46,16 +46,26 @@ from db import (  # noqa: E402
     list_runs_since,
 )
 
-# 実行と実行の間に空ける秒数。RUN_INTERVAL_MIN/MAX_SECONDS で調整できる。
-# 毎時0分に全件が固まって連射されるのを避けるためのもの。
+# 実行と実行の間に空ける秒数。検知のきつさが違うので platform ごとに持つ。
+# Google は弾かれやすいので長く、Yahoo! は検知されないので短くてよい。
+PLATFORM_INTERVAL_DEFAULTS: dict[str, tuple[float, float]] = {
+    "google": (60.0, 180.0),
+    "yahoo": (20.0, 45.0),
+}
+PLATFORM_INTERVAL_ENV: dict[str, tuple[str, str]] = {
+    "google": ("GOOGLE_INTERVAL_MIN_SECONDS", "GOOGLE_INTERVAL_MAX_SECONDS"),
+    "yahoo": ("YAHOO_INTERVAL_MIN_SECONDS", "YAHOO_INTERVAL_MAX_SECONDS"),
+}
+
+# 上記に無い platform 用のフォールバック（RUN_INTERVAL_MIN/MAX_SECONDS）。
 DEFAULT_RUN_INTERVAL_MIN_SECONDS = 60.0
 DEFAULT_RUN_INTERVAL_MAX_SECONDS = 180.0
 
 # 1つの時刻枠に収まってほしい時間。超えると次の枠に食い込む。
 SLOT_CAPACITY_SECONDS = 3600
 
-# キューに積む上限。QUEUE_MAX_ITEMS で変えられる。
-DEFAULT_QUEUE_MAX_ITEMS = 60
+# 件数の絶対上限。0 なら無効で、枠の消化見込みだけで判断する。
+DEFAULT_QUEUE_MAX_ITEMS = 0
 
 # 実行が長引いて分をまたいだときに遡ってよい分数。
 # これを超える取りこぼしは積まない（過去分のバックフィルはしない）。
@@ -116,21 +126,41 @@ def _env_float(name: str, default: float) -> float:
 
 
 def queue_max_items() -> int:
-    """キューに積む上限。1つの時刻枠で消化できる量に抑えるためのガード。"""
+    """件数の絶対上限。0 なら無効（枠の消化見込みだけで判断する）。"""
     return int(_env_float("QUEUE_MAX_ITEMS", float(DEFAULT_QUEUE_MAX_ITEMS)))
 
 
-def run_interval_range() -> tuple[float, float]:
-    """実行間隔の下限・上限（秒）。"""
-    minimum = _env_float("RUN_INTERVAL_MIN_SECONDS", DEFAULT_RUN_INTERVAL_MIN_SECONDS)
-    maximum = _env_float("RUN_INTERVAL_MAX_SECONDS", DEFAULT_RUN_INTERVAL_MAX_SECONDS)
+def _interval_range(
+    min_name: str, max_name: str, defaults: tuple[float, float]
+) -> tuple[float, float]:
+    minimum = _env_float(min_name, defaults[0])
+    maximum = _env_float(max_name, defaults[1])
     if maximum < minimum:
         print(
-            f"! RUN_INTERVAL_MAX_SECONDS({maximum:.0f}) が MIN({minimum:.0f}) より"
+            f"! {max_name}({maximum:.0f}) が {min_name}({minimum:.0f}) より"
             "小さいので、上限を下限に揃えます。"
         )
         maximum = minimum
     return minimum, maximum
+
+
+def run_interval_range() -> tuple[float, float]:
+    """platform 別の設定が無いときに使う実行間隔（秒）。"""
+    return _interval_range(
+        "RUN_INTERVAL_MIN_SECONDS",
+        "RUN_INTERVAL_MAX_SECONDS",
+        (DEFAULT_RUN_INTERVAL_MIN_SECONDS, DEFAULT_RUN_INTERVAL_MAX_SECONDS),
+    )
+
+
+def platform_intervals() -> dict[str, tuple[float, float]]:
+    """platform ごとの実行間隔（秒）。"""
+    intervals: dict[str, tuple[float, float]] = {}
+    for platform, (min_name, max_name) in PLATFORM_INTERVAL_ENV.items():
+        intervals[platform] = _interval_range(
+            min_name, max_name, PLATFORM_INTERVAL_DEFAULTS[platform]
+        )
+    return intervals
 
 
 def _alternate_by_platform(jobs: list[Job]) -> list[Job]:
@@ -228,7 +258,8 @@ class Scheduler:
 
         self.started_at: Optional[datetime] = None
         self.last_daily_date: Optional[str] = None
-        self.gap_min, self.gap_max = run_interval_range()
+        self.fallback_interval = run_interval_range()
+        self.intervals = platform_intervals()
         self.queue_max = queue_max_items()
 
         self.stopping = False
@@ -237,6 +268,28 @@ class Scheduler:
         self.last_scanned_minute: Optional[datetime] = None
         self.last_loop_minute: Optional[str] = None
         self.last_summary_hour: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # 実行間隔
+    # ------------------------------------------------------------------
+
+    def interval_for(self, platform: str) -> tuple[float, float]:
+        return self.intervals.get(platform, self.fallback_interval)
+
+    def average_interval(self, platform: str) -> float:
+        minimum, maximum = self.interval_for(platform)
+        return (minimum + maximum) / 2
+
+    def estimated_seconds(self, jobs: Sequence[Job]) -> float:
+        """その一群を消化するのにかかる待ち時間の見込み（検索時間は別）。"""
+        return sum(self.average_interval(job.target.platform) for job in jobs)
+
+    def describe_intervals(self) -> str:
+        parts = [
+            f"{platform} {minimum:.0f}〜{maximum:.0f}秒"
+            for platform, (minimum, maximum) in sorted(self.intervals.items())
+        ]
+        return " / ".join(parts)
 
     # ------------------------------------------------------------------
     # スケジュールの読み込み
@@ -365,19 +418,40 @@ class Scheduler:
     def apply_queue_cap(
         self, jobs: list[Job], now: datetime
     ) -> tuple[list[Job], list[Job]]:
-        """1つの時刻枠で消化できない量は積まない。"""
-        room = max(0, self.queue_max - len(self.queue))
-        if len(jobs) <= room:
-            return jobs, []
+        """1つの時刻枠で消化できない量は積まない。
 
-        accepted, dropped = jobs[:room], jobs[room:]
+        上限は固定値ではなく、その枠の platform 構成と間隔設定から決まる。
+        Yahoo! だけなら多く積めるし、Google が多ければ少なくなる。
+        """
+        budget = SLOT_CAPACITY_SECONDS - self.estimated_seconds(self.queue)
+
+        accepted: list[Job] = []
+        used = 0.0
+        for job in jobs:
+            cost = self.average_interval(job.target.platform)
+            if used + cost > budget:
+                break
+            accepted.append(job)
+            used += cost
+
+        # 絶対上限が設定されていれば、さらにそこで切る。
+        if self.queue_max > 0:
+            room = max(0, self.queue_max - len(self.queue))
+            accepted = accepted[:room]
+
+        dropped = jobs[len(accepted) :]
+        if not dropped:
+            return accepted, []
+
+        counts = Counter(job.target.platform for job in dropped)
+        breakdown = " / ".join(f"{name} {count}" for name, count in sorted(counts.items()))
         self.notifier.alert(
             "queue_overflow",
             (
-                f"キューが上限 {self.queue_max} 件に達したため、{len(dropped)} 件を"
-                "積まずに捨てました（当日中の再実行はしません）。"
-                "スケジュールの時刻を分散させるか、QUEUE_MAX_ITEMS と"
-                "実行間隔を見直してください。"
+                f"1つの時刻枠（{SLOT_CAPACITY_SECONDS // 60} 分）で消化できないため、"
+                f"{len(dropped)} 件（{breakdown}）を積みませんでした。"
+                "当日中の再実行はしません。一括登録の「時刻の自動分散」で"
+                "時刻をばらすか、実行間隔を見直してください。"
             ),
             now=now,
         )
@@ -389,8 +463,7 @@ class Scheduler:
         """積んだ件数と消化見込みを出す。枠に収まらないなら警告する。"""
         if dropped:
             print(
-                f"[{now:%H:%M}] ! キュー上限 {self.queue_max} 件のため "
-                f"{len(dropped)} 件を積みませんでした。"
+                f"[{now:%H:%M}] ! 枠に収まらないため {len(dropped)} 件を積みませんでした。"
             )
         if not jobs:
             return
@@ -404,21 +477,23 @@ class Scheduler:
         if len(jobs) > MAX_BATCH_LINES:
             print(f"    … 他 {len(jobs) - MAX_BATCH_LINES} 件")
 
-        average = (self.gap_min + self.gap_max) / 2
-        estimate = len(jobs) * average
+        estimate = self.estimated_seconds(jobs)
+        queued = self.estimated_seconds(self.queue)
         print(
             f"    消化見込み: 約 {estimate / 60:.0f} 分"
-            f"（平均間隔 {average:.0f} 秒 × {len(jobs)} 件。検索そのものの時間は別）"
+            f"（platform 別の平均間隔 × {len(jobs)} 件。検索そのものの時間は別）"
         )
+        if queued > estimate:
+            print(f"    キュー全体の消化見込み: 約 {queued / 60:.0f} 分")
 
-        if estimate > SLOT_CAPACITY_SECONDS:
+        if queued > SLOT_CAPACITY_SECONDS:
             slot = min(job.slot for job in jobs)
             self.notifier.alert(
                 f"slot_overflow:{slot}",
                 (
-                    f"{slot} の枠に {len(jobs)} 件が入り、消化に約 {estimate / 60:.0f} 分"
-                    f"かかる見込みです（1枠 {SLOT_CAPACITY_SECONDS // 60} 分）。"
-                    "次の枠に食い込みます。件数を減らすか実行間隔を詰めてください。"
+                    f"{slot} の時点でキューが {len(self.queue)} 件あり、消化に約 "
+                    f"{queued / 60:.0f} 分かかる見込みです"
+                    f"（1枠 {SLOT_CAPACITY_SECONDS // 60} 分）。次の枠に食い込みます。"
                 ),
                 now=now,
             )
@@ -608,8 +683,15 @@ class Scheduler:
         print(f"  現在時刻   : {now:%Y-%m-%d %H:%M:%S}")
         print(f"  スケジュール: {len(self.targets)} 件（enabled=true）")
         print(f"  プロキシ   : {'SOAX 経由' if self.use_proxy else '直結（--no-proxy）'}")
-        print(f"  実行間隔   : {self.gap_min:.0f}〜{self.gap_max:.0f}秒")
-        print(f"  キュー上限 : {self.queue_max} 件")
+        print(f"  実行間隔   : {self.describe_intervals()}")
+        print(
+            "  キュー上限 : "
+            + (
+                f"{self.queue_max} 件"
+                if self.queue_max > 0
+                else f"枠の消化見込み（{SLOT_CAPACITY_SECONDS // 60} 分）で判断"
+            )
+        )
         print(f"  起動直後のキュー: {len(self.queue)} 件")
         print(
             "  アラート   : "
@@ -652,11 +734,17 @@ class Scheduler:
                 self.execute(job)
                 if self.stopping:
                     break
-                gap = random.uniform(self.gap_min, self.gap_max)
+                # 次に実行するものの platform で待ち時間を決める。
+                # Yahoo! は検知されないので Google ほど空けなくてよい。
+                next_platform = (
+                    self.queue[0].target.platform if self.queue else job.target.platform
+                )
+                gap = random.uniform(*self.interval_for(next_platform))
                 self.next_allowed_at = time.monotonic() + gap
                 if self.queue:
                     print(
-                        f"  次の実行まで {gap:.0f} 秒待機します（キュー残り {len(self.queue)} 件）"
+                        f"  次の実行（{next_platform}）まで {gap:.0f} 秒待機します"
+                        f"（キュー残り {len(self.queue)} 件）"
                     )
                 continue
 

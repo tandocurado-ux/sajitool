@@ -47,6 +47,10 @@ export const TIME_MODE_LABELS: Record<TimeMode, string> = {
   spread: "時間帯に自動分散",
 };
 
+/** 1日の回転数（1スケジュールあたり何回計測するか）。 */
+export const ROTATION_OPTIONS = [1, 2, 3] as const;
+export const DEFAULT_ROTATIONS = 1;
+
 export type NewRegionDraft = {
   label: string;
   prefecture: string | null;
@@ -66,6 +70,8 @@ export type BulkSetupInput = {
   times: string[];
   /** timeMode === "spread" のとき、均等に割り振る15分刻みの枠。 */
   spreadSlots: string[];
+  /** timeMode === "spread" のとき、1スケジュールあたりの計測回数。 */
+  rotations: number;
   devices: Device[];
 };
 
@@ -191,6 +197,7 @@ export function parseBulkSetupInput(
 
   let times: string[] = [];
   let spreadSlots: string[] = [];
+  let rotations = DEFAULT_ROTATIONS;
 
   if (timeMode === "fixed") {
     const parsed = parseTimes(String(formData.get("times") ?? ""));
@@ -205,6 +212,11 @@ export function parseBulkSetupInput(
     spreadSlots = timeSlotsBetween(start, end);
     if (spreadSlots.length === 0) {
       return { ok: false, error: "終了時刻は開始時刻と同じか、それより後にしてください。" };
+    }
+
+    rotations = Number(formData.get("spread_rotations") ?? DEFAULT_ROTATIONS);
+    if (!ROTATION_OPTIONS.includes(rotations as (typeof ROTATION_OPTIONS)[number])) {
+      return { ok: false, error: "1日の回転数を選んでください。" };
     }
   }
 
@@ -235,6 +247,7 @@ export function parseBulkSetupInput(
         timeMode,
         times,
         spreadSlots,
+        rotations,
         devices: devicesFor(deviceMode),
       },
       warnings: newRegions.data.warnings,

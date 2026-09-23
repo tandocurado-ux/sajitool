@@ -23,14 +23,19 @@ services:
         sync: false
 
       # --- 既定値のままで動くもの ---
-      # スケジューラの実行間隔（秒）。1検索ごとにこの範囲の一様ランダムで待つ。
-      - key: RUN_INTERVAL_MIN_SECONDS
+      # スケジューラの実行間隔（秒）。次に実行するものの platform で決まる。
+      # Google は弾かれやすいので長め、Yahoo! は検知されないので短くてよい。
+      - key: GOOGLE_INTERVAL_MIN_SECONDS
         value: "60"
-      - key: RUN_INTERVAL_MAX_SECONDS
+      - key: GOOGLE_INTERVAL_MAX_SECONDS
         value: "180"
-      # キューに積む上限。超えた分は積まずに捨てる。
+      - key: YAHOO_INTERVAL_MIN_SECONDS
+        value: "20"
+      - key: YAHOO_INTERVAL_MAX_SECONDS
+        value: "45"
+      # 件数の絶対上限。0 なら 1枠(60分)の消化見込みだけで判断する。
       - key: QUEUE_MAX_ITEMS
-        value: "60"
+        value: "0"
       - key: SOAX_ENDPOINT
         value: proxy.soax.com:1337
       - key: SOAX_COUNTRY
