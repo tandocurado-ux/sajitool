@@ -46,6 +46,14 @@ class SearchError(RuntimeError):
     """検索フローが続行不能になったときに投げる。"""
 
 
+class SearchBoxNotFound(SearchError):
+    """検索窓が見つからなかった。診断用にページの状態を持つ。"""
+
+    def __init__(self, message: str, diagnostics: Optional[dict[str, str]] = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
+
 # --------------------------------------------------------------------------
 # デバイス記述子
 # --------------------------------------------------------------------------
@@ -248,11 +256,25 @@ def build_soax_username(
     return "-".join(parts)
 
 
-def build_proxy_config(prefecture: Optional[str] = None) -> Optional[ProxyConfig]:
+def soax_session_pinned() -> bool:
+    """SOAX_SESSION_ID が固定されているか。固定だとリトライしても同じ IP になる。"""
+    return bool(os.environ.get("SOAX_SESSION_ID", "").strip())
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def build_proxy_config(
+    prefecture: Optional[str] = None, *, platform: Optional[str] = None
+) -> Optional[ProxyConfig]:
     """環境変数から SOAX の設定を組み立てる。SOAX_PASS が無ければ None。
 
     パッケージの識別はパスワードで行われるため、ユーザー名側には
     オプション文字列だけを入れる（package ID は不要）。
+
+    Google だけ検知されるケースの切り分け用に、platform="google" のときは
+    SOAX_GOOGLE_OMIT_REGION / SOAX_GOOGLE_ROTATE_SECONDS で上書きできる。
     """
     password = os.environ.get("SOAX_PASS", "").strip()
     if not password:
@@ -266,6 +288,15 @@ def build_proxy_config(prefecture: Optional[str] = None) -> Optional[ProxyConfig
     ).strip()
 
     region = soax_region_for(prefecture) if soax_region_enabled() else None
+
+    if platform == "google":
+        # region 絞りでノード品質が落ちている可能性の切り分け。
+        # 地点は geolocation override で決まるので、外しても順位への実害はない。
+        if _env_flag("SOAX_GOOGLE_OMIT_REGION"):
+            region = None
+        google_rotate = os.environ.get("SOAX_GOOGLE_ROTATE_SECONDS", "").strip()
+        if google_rotate:
+            rotate_seconds = google_rotate
 
     raw_session = os.environ.get("SOAX_SESSION_ID", "").strip() or new_session_id()
     session_id = sanitize_session_id(raw_session)
@@ -301,6 +332,8 @@ class SearchOutcome:
     error: Optional[str] = None
     notes: list[str] = field(default_factory=list)
     screenshot_path: Optional[Path] = None
+    # 1 = 初回のみ、2 = セッションを変えてリトライした
+    attempts: int = 1
 
     def note(self, message: str) -> None:
         """想定外の挙動を落とさずに残す。"""
@@ -515,6 +548,117 @@ async def grant_geolocation(
 # --------------------------------------------------------------------------
 
 
+async def page_diagnostics(tab) -> dict[str, str]:
+    """いま何が表示されているのかを掴むための最小情報。
+
+    検索窓が見つからないとき、同意画面なのか別レイアウトなのか
+    /sorry/ の亜種なのかをログだけで判別できるようにする。
+    """
+    try:
+        raw = await tab.evaluate(
+            """
+            (() => JSON.stringify({
+              url: location.href,
+              host: location.host,
+              title: document.title || '',
+              body: (document.body ? document.body.innerText : '').slice(0, 500)
+            }))()
+            """,
+            return_by_value=True,
+        )
+        return json.loads(raw) if isinstance(raw, str) else {}
+    except Exception:  # noqa: BLE001 - 診断で落とさない
+        return {}
+
+
+def format_diagnostics(info: dict[str, str]) -> list[str]:
+    body = " / ".join(
+        line.strip() for line in (info.get("body") or "").splitlines() if line.strip()
+    )
+    return [
+        f"URL   : {(info.get('url') or '-')[:200]}",
+        f"title : {(info.get('title') or '-')[:200]}",
+        f"body  : {body[:500] or '-'}",
+    ]
+
+
+# Google の同意画面で押すボタン。まず id / 属性、だめならテキストで探す。
+CONSENT_SELECTORS = (
+    "#L2AGLb",
+    "button#L2AGLb",
+    "form[action*='consent'] button",
+    "button[aria-label*='同意']",
+    "button[aria-label*='Accept']",
+)
+CONSENT_TEXTS = (
+    "すべて同意",
+    "同意する",
+    "同意してつづける",
+    "Accept all",
+    "I agree",
+    "Agree to all",
+)
+
+
+async def looks_like_consent(tab) -> bool:
+    info = await page_diagnostics(tab)
+    host = (info.get("host") or "").lower()
+    if "consent." in host:
+        return True
+    body = info.get("body") or ""
+    return any(text in body for text in CONSENT_TEXTS)
+
+
+async def try_accept_consent(tab) -> Optional[str]:
+    """同意画面なら「同意する」を押す。押せたら押したものを返す。
+
+    実際のクリック（マウスイベント）を優先し、だめなら JS クリックに落とす。
+    """
+    for selector in CONSENT_SELECTORS:
+        try:
+            element = await tab.select(selector, timeout=1)
+        except Exception:  # noqa: BLE001 - 次の候補へ
+            continue
+        if element is None:
+            continue
+        try:
+            await element.click()
+            return selector
+        except Exception:  # noqa: BLE001
+            continue
+
+    try:
+        clicked = await tab.evaluate(
+            """
+            (() => {
+              const texts = """
+            + json.dumps(list(CONSENT_TEXTS))
+            + """;
+              const nodes = document.querySelectorAll(
+                "button, div[role=button], input[type=submit], a[role=button]"
+              );
+              for (const node of nodes) {
+                const label = (
+                  node.innerText || node.value || node.getAttribute('aria-label') || ''
+                ).trim();
+                if (!label) continue;
+                if (texts.some((t) => label.includes(t))) {
+                  node.click();
+                  return label.slice(0, 60);
+                }
+              }
+              return null;
+            })()
+            """,
+            return_by_value=True,
+        )
+        if isinstance(clicked, str) and clicked:
+            return f"text:{clicked}"
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 async def select_first(tab, selectors: Sequence[str], timeout: float = 15.0):
     """候補セレクタを順に試し、最初に見つかった要素を返す。
 
@@ -594,7 +738,14 @@ async def focus_search_box(
     フォーカスが入らないままタイプすると、文字がどこにも入らないまま
     Enter を押すことになり not_searched になる。
     """
-    element, selector = await select_first(tab, selectors, timeout=20)
+    try:
+        element, selector = await select_first(tab, selectors, timeout=20)
+    except SearchError as caught:
+        info = await page_diagnostics(tab)
+        print("  ! 検索窓が見つかりません。そのときのページ:")
+        for line in format_diagnostics(info):
+            print(f"      {line}")
+        raise SearchBoxNotFound(str(caught), info) from caught
 
     if profile.mobile:
         await _tap_element(tab, element)

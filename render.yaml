@@ -34,3 +34,11 @@ services:
       # regions.prefecture から region トークンを付けるか（0 で無効）
       - key: SOAX_REGION_ENABLED
         value: "1"
+
+      # --- Google だけ検知されるときの切り分けつまみ（既定は無効）---
+      # 1 で Google のときだけ region を外して country-jp のみにする
+      - key: SOAX_GOOGLE_OMIT_REGION
+        value: "0"
+      # Google のときだけローテート間隔を変える（空なら SOAX_ROTATE_SECONDS）
+      - key: SOAX_GOOGLE_ROTATE_SECONDS
+        value: ""

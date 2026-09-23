@@ -227,6 +227,34 @@ country-jp-region-osaka-network-res-rotate-timed_300-session-<sessionid>
 - `region` は英語小文字（`osaka` / `aichi` …）。変換表は `device.py` の
   `PREFECTURE_TO_SOAX_REGION` にある（47都道府県）
 
+#### Google だけ検知されるときの切り分け
+
+直結では通る・SOAX 経由の Yahoo! も通るのに Google だけ `/sorry/` になる場合、
+出口ノードの品質を疑う。Google のときだけ次を効かせられる（既定は無効）。
+
+| 変数 | 効果 |
+| ---- | ---- |
+| `SOAX_GOOGLE_OMIT_REGION=1` | Google のときだけ `region` を外して `country-jp` だけで出る。地点は geolocation override で決まるので順位への実害はない |
+| `SOAX_GOOGLE_ROTATE_SECONDS=600` | Google のときだけローテート間隔を長くする（空なら `SOAX_ROTATE_SECONDS`） |
+
+Yahoo! 側の組み立ては変わらないので、片方だけ条件を変えて比較できる。
+
+#### blocked 時の自動リトライ
+
+`blocked` または `search_box_not_found` のときは、**セッション ID を変えて新しい
+exit IP で1回だけ**自動リトライする。`runs` に残るのは最終結果だけだが、
+ログと注記に「1回目の status / exit IP → 2回目の status / exit IP」を残す。
+
+- `--no-proxy` のときはリトライしない（IP が変わらないため）
+- `SOAX_SESSION_ID` を固定しているときもリトライしない（同じ IP になるため。理由を注記に残す）
+
+#### 検索窓が見つからないとき
+
+同意画面・別レイアウト・`/sorry/` 亜種のどれなのかを切り分けられるよう、
+その時点の **URL / ページタイトル / body の先頭500文字** をログと `runs` の注記に出す。
+同意画面（`consent.google.com` など）を検出した場合は「同意する」を押して続行する
+（`#L2AGLb` などの実クリックを優先し、だめならボタン文言で探して JS クリック）。
+
 ### 異常の早期検知（alerts.py）
 
 検知が遅れて計測を取りこぼすのを防ぐため、毎時の集計時に次を判定して通知する。
@@ -295,7 +323,9 @@ docker run --rm --env-file engine/.env sajitool-engine \
    | `SOAX_COUNTRY` | 任意 | 既定 `jp` |
    | `SOAX_NETWORK` | 任意 | 既定 `res`（住宅IP） |
    | `SOAX_ROTATE_SECONDS` | 任意 | 既定 `300` |
-   | `SOAX_SESSION_ID` | 任意 | session を固定したいときだけ |
+   | `SOAX_SESSION_ID` | 任意 | session を固定したいときだけ（固定するとリトライが無効になる） |
+   | `SOAX_GOOGLE_OMIT_REGION` | 任意 | 既定 `0`。`1` で Google のときだけ region を外す |
+   | `SOAX_GOOGLE_ROTATE_SECONDS` | 任意 | Google のときだけローテート間隔を変える |
 
    `SOAX_USER` は不要（旧仕様。設定されていても無視される）。
 

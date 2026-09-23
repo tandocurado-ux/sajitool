@@ -83,10 +83,28 @@ async def search(
         await tab.reload()
         await tab.sleep(1.0)
 
+        # 同意画面が挟まると検索窓が出てこない。出ていれば押してから進む。
+        if await dev.looks_like_consent(tab):
+            consent = await dev.try_accept_consent(tab)
+            if consent:
+                outcome.note(f"同意画面を処理しました（{consent}）")
+                await tab.sleep(1.5)
+
         # --- 検索 ---
-        await dev.focus_search_box(
-            tab, profile, SEARCH_BOX_SELECTORS[device], SEARCH_INPUT_NAMES
-        )
+        try:
+            await dev.focus_search_box(
+                tab, profile, SEARCH_BOX_SELECTORS[device], SEARCH_INPUT_NAMES
+            )
+        except dev.SearchBoxNotFound:
+            # 同意画面が遅れて出ることがあるので、一度だけ押し直して再挑戦する。
+            consent = await dev.try_accept_consent(tab)
+            if not consent:
+                raise
+            outcome.note(f"検索窓が無かったので同意画面を処理しました（{consent}）")
+            await tab.sleep(1.5)
+            await dev.focus_search_box(
+                tab, profile, SEARCH_BOX_SELECTORS[device], SEARCH_INPUT_NAMES
+            )
         await tab.sleep(random.uniform(0.3, 0.7))
         await dev.type_like_human(tab, keyword)
         await tab.sleep(random.uniform(0.2, 0.5))
@@ -116,6 +134,15 @@ async def search(
 
         outcome.screenshot_path = await dev.capture_screenshot(tab, screenshot_path)
 
+    except dev.SearchBoxNotFound as caught:
+        # どの画面で見失ったのかを runs の注記と Render のログに残す。
+        outcome.status = "error"
+        outcome.error = "search_box_not_found"
+        for line in dev.format_diagnostics(caught.diagnostics):
+            outcome.note(line)
+        if tab is not None:
+            outcome.final_url = outcome.final_url or await dev.current_url(tab)
+            outcome.screenshot_path = await dev.capture_screenshot(tab, screenshot_path)
     except Exception as caught:  # noqa: BLE001 - runs に error として残すため握る
         outcome.status = "error"
         outcome.error = f"{type(caught).__name__}: {caught}"

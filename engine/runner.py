@@ -34,7 +34,11 @@ STATUS_LABELS = {
 ERROR_LABELS = {
     "not_searched": "検索結果ページに到達しませんでした（検索が成立していない）",
     "no_results": "検索結果ページには着いたが結果要素が見つかりませんでした",
+    "search_box_not_found": "検索窓が見つかりませんでした（同意画面・別レイアウト・sorry 亜種の疑い）",
 }
+
+# 新しい exit IP を引き直せば通る見込みがあるもの。
+RETRYABLE_ERRORS = ("search_box_not_found",)
 
 
 def force_utf8_stdout() -> None:
@@ -135,7 +139,7 @@ async def _search(
     if engine is None:
         raise dev.SearchError(f"未対応の platform です: {platform}")
 
-    proxy = dev.build_proxy_config(prefecture) if use_proxy else None
+    proxy = dev.build_proxy_config(prefecture, platform=platform) if use_proxy else None
     if use_proxy and proxy is None and not quiet:
         print("  ! SOAX の環境変数が未設定のため、プロキシ無しで実行します。")
 
@@ -150,6 +154,13 @@ async def _search(
     )
 
 
+def should_retry(outcome: dev.SearchOutcome) -> bool:
+    """IP を変えれば通るかもしれない結果か。"""
+    if outcome.status == "blocked":
+        return True
+    return outcome.status == "error" and outcome.error in RETRYABLE_ERRORS
+
+
 def run_search(
     *,
     platform: str,
@@ -162,22 +173,50 @@ def run_search(
     headless: bool,
     screenshot_path: Optional[Path] = None,
     quiet: bool = False,
+    allow_retry: bool = True,
 ) -> dev.SearchOutcome:
-    """検索を1回実行する（同期呼び出し）。Chrome は1プロセスずつ。"""
-    return asyncio.run(
-        _search(
-            platform=platform,
-            keyword=keyword,
-            lat=lat,
-            lng=lng,
-            device=device,
-            prefecture=prefecture,
-            use_proxy=use_proxy,
-            headless=headless,
-            screenshot_path=screenshot_path,
-            quiet=quiet,
-        )
+    """検索を1回実行する（同期呼び出し）。Chrome は1プロセスずつ。
+
+    blocked / 検索窓不明のときだけ、セッション ID を変えて新しい exit IP で
+    1回だけ自動リトライする（session は build_proxy_config が毎回作り直す）。
+    """
+    kwargs = dict(
+        platform=platform,
+        keyword=keyword,
+        lat=lat,
+        lng=lng,
+        device=device,
+        prefecture=prefecture,
+        use_proxy=use_proxy,
+        headless=headless,
+        screenshot_path=screenshot_path,
+        quiet=quiet,
     )
+    outcome = asyncio.run(_search(**kwargs))
+
+    if not allow_retry or not use_proxy or not should_retry(outcome):
+        return outcome
+    if dev.soax_session_pinned():
+        outcome.note("SOAX_SESSION_ID が固定されているためリトライしません（同じ IP になる）。")
+        return outcome
+
+    first_status = outcome.status
+    first_error = outcome.error
+    first_ip = outcome.exit_ip
+    reason = first_status if first_status != "error" else (first_error or "error")
+    print(
+        f"  ! {reason} のため、セッションを変えて1回だけリトライします"
+        f"（1回目の exit IP: {first_ip or '-'}）"
+    )
+
+    retry = asyncio.run(_search(**kwargs))
+    retry.attempts = 2
+    retry.note(
+        f"リトライ: 1回目 status={first_status}"
+        + (f"/{first_error}" if first_error else "")
+        + f" exit IP {first_ip or '-'} → 2回目 status={retry.status} exit IP {retry.exit_ip or '-'}"
+    )
+    return retry
 
 
 def run_search_for_target(
@@ -187,8 +226,10 @@ def run_search_for_target(
     headless: bool,
     screenshot_path: Optional[Path] = None,
     quiet: bool = False,
+    allow_retry: bool = True,
 ) -> dev.SearchOutcome:
     return run_search(
+        allow_retry=allow_retry,
         platform=target.platform,
         keyword=target.keyword,
         lat=target.lat,
@@ -220,6 +261,8 @@ def print_outcome(outcome: dev.SearchOutcome, *, indent: str = "  ") -> None:
     print(f"{indent}結果件数   : {outcome.result_count} 件")
     print(f"{indent}最終 URL   : {outcome.final_url[:120] or '-'}")
     print(f"{indent}exit IP    : {outcome.exit_ip or '-（--no-proxy では null）'}")
+    if outcome.attempts > 1:
+        print(f"{indent}試行回数   : {outcome.attempts}（セッションを変えてリトライ済み）")
     if outcome.error:
         print(f"{indent}エラー     : {ERROR_LABELS.get(outcome.error, outcome.error)}")
     if outcome.screenshot_path:

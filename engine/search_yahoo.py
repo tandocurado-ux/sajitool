@@ -149,6 +149,15 @@ async def search(
 
         outcome.screenshot_path = await dev.capture_screenshot(tab, screenshot_path)
 
+    except dev.SearchBoxNotFound as caught:
+        # どの画面で見失ったのかを runs の注記と Render のログに残す。
+        outcome.status = "error"
+        outcome.error = "search_box_not_found"
+        for line in dev.format_diagnostics(caught.diagnostics):
+            outcome.note(line)
+        if tab is not None:
+            outcome.final_url = outcome.final_url or await dev.current_url(tab)
+            outcome.screenshot_path = await dev.capture_screenshot(tab, screenshot_path)
     except Exception as caught:  # noqa: BLE001 - runs に error として残すため握る
         outcome.status = "error"
         outcome.error = f"{type(caught).__name__}: {caught}"
