@@ -13,9 +13,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import platform as _platform
 import random
 import re
 import string
+import subprocess
+import sys
+import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -52,6 +57,159 @@ class SearchBoxNotFound(SearchError):
     def __init__(self, message: str, diagnostics: Optional[dict[str, str]] = None):
         super().__init__(message)
         self.diagnostics = diagnostics or {}
+
+
+# --------------------------------------------------------------------------
+# ログ（段階マーカー・例外・環境情報）
+#
+# ここにあるのは print するだけの関数。レシピの手順や待ち時間には触れない。
+# 1実行の中で「どの段階の直後で例外が出たか」を Render のログだけで
+# 読めるようにするためのもの。
+# --------------------------------------------------------------------------
+
+# 直近に通過した段階名。Chrome は1プロセスずつしか動かさないので
+# モジュール変数で足りる（並列実行はしない前提）。
+_last_stage: str = ""
+
+
+def _stamp() -> str:
+    return time.strftime("%H:%M:%S")
+
+
+def stage(name: str, detail: str = "") -> None:
+    """段階マーカーを1行出す。例外が出たとき「直前の段階」として参照する。"""
+    global _last_stage
+    _last_stage = name
+    line = f"  [{_stamp()}] ▶ {name}"
+    if detail:
+        line += f": {detail}"
+    print(line, flush=True)
+
+
+def last_stage() -> str:
+    """直近に通過した段階名。まだ何も通っていなければ「（未開始）」。"""
+    return _last_stage or "（未開始）"
+
+
+def reset_stage() -> None:
+    global _last_stage
+    _last_stage = ""
+
+
+def format_exception_lines(caught: BaseException) -> list[str]:
+    """例外の型・メッセージ・traceback 全文を行のリストにする。"""
+    text = "".join(
+        traceback.format_exception(type(caught), caught, caught.__traceback__)
+    )
+    return text.rstrip().splitlines()
+
+
+def log_exception(caught: BaseException, *, context: str = "") -> None:
+    """例外の型・メッセージ・直前の段階・traceback 全文をログに出す。
+
+    status だけ runs に残して原因が消えてしまわないよう、
+    例外を握る場所では必ずこれを呼ぶ。
+    """
+    head = f"  [{_stamp()}] ✖ 例外"
+    if context:
+        head += f"（{context}）"
+    print(f"{head}: {type(caught).__name__}: {caught}", flush=True)
+    print(f"    直前の段階: {last_stage()}", flush=True)
+    print("    traceback:", flush=True)
+    for line in format_exception_lines(caught):
+        print(f"    | {line}", flush=True)
+
+
+# 起動時に「設定されているか」だけを出す環境変数。値は出さない。
+ENV_KEYS_OF_INTEREST: tuple[str, ...] = (
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "SOAX_PASS",
+    "SOAX_ENDPOINT",
+    "SOAX_COUNTRY",
+    "SOAX_NETWORK",
+    "SOAX_ROTATE_SECONDS",
+    "SOAX_REGION_ENABLED",
+    "SOAX_SESSION_ID",
+    "SOAX_GOOGLE_NETWORK",
+    "SOAX_GOOGLE_OMIT_REGION",
+    "SOAX_GOOGLE_ROTATE_SECONDS",
+    "ALERT_WEBHOOK_URL",
+    "CHROME_PATH",
+    "CHROME_EXTRA_ARGS",
+    "ENGINE_HEADLESS",
+    "DISPLAY",
+    "XVFB_SCREEN",
+    "TZ",
+    "GOOGLE_INTERVAL_MIN_SECONDS",
+    "GOOGLE_INTERVAL_MAX_SECONDS",
+    "YAHOO_INTERVAL_MIN_SECONDS",
+    "YAHOO_INTERVAL_MAX_SECONDS",
+    "QUEUE_MAX_ITEMS",
+)
+
+
+def chrome_version(path: str) -> str:
+    """Chrome のバージョン文字列。取れなければ理由を返す（起動は止めない）。
+
+    Windows の chrome.exe は --version で何も出さない（GUI が立ち上がりうる）ので、
+    exe の隣にあるバージョン名のディレクトリから読む。
+    """
+    if sys.platform == "win32":
+        parent = Path(path).parent
+        try:
+            versions = sorted(
+                child.name
+                for child in parent.iterdir()
+                if child.is_dir() and re.fullmatch(r"\d+(\.\d+){3}", child.name)
+            )
+        except OSError as caught:
+            return f"取得できず（{type(caught).__name__}: {caught}）"
+        return versions[-1] if versions else "取得できず（バージョンディレクトリなし）"
+
+    try:
+        completed = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except Exception as caught:  # noqa: BLE001 - 環境情報の取得で落とさない
+        return f"取得できず（{type(caught).__name__}: {caught}）"
+    output = (completed.stdout or "").strip() or (completed.stderr or "").strip()
+    if not output:
+        return f"取得できず（--version の出力なし, exit={completed.returncode}）"
+    return output.splitlines()[0][:120]
+
+
+def nodriver_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("nodriver")
+    except Exception:  # noqa: BLE001
+        return getattr(uc, "__version__", "不明")
+
+
+def environment_lines() -> list[str]:
+    """起動時に1回出す環境情報。秘密値は出さず「設定あり/未設定」だけ。"""
+    try:
+        chrome = find_chrome()
+        chrome_line = f"{chrome}（{chrome_version(chrome)}）"
+    except SearchError as caught:
+        chrome_line = f"見つかりません: {caught}"
+
+    present = [name for name in ENV_KEYS_OF_INTEREST if os.environ.get(name, "").strip()]
+    missing = [name for name in ENV_KEYS_OF_INTEREST if name not in present]
+
+    return [
+        f"Python     : {_platform.python_version()}（{sys.platform}）",
+        f"OS         : {_platform.platform()}",
+        f"Chrome     : {chrome_line}",
+        f"nodriver   : {nodriver_version()}",
+        f"環境変数あり: {', '.join(present) or '-'}",
+        f"環境変数なし: {', '.join(missing) or '-'}",
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -395,16 +553,33 @@ async def start_browser(
     if proxy:
         browser_args.append(f"--proxy-server={proxy.server}")
 
-    return await uc.start(
-        browser_executable_path=find_chrome(),
+    reset_stage()
+    chrome_path = find_chrome()
+    stage(
+        "Chrome起動開始",
+        f"path={chrome_path} headless={headless} "
+        f"proxy={'あり' if proxy else 'なし'} args={' '.join(browser_args)}",
+    )
+    browser = await uc.start(
+        browser_executable_path=chrome_path,
         browser_args=browser_args,
         lang="ja-JP",
         headless=headless,
     )
+    stage("Chrome起動完了", f"websocket={getattr(browser, 'websocket_url', '') or '-'}")
+    return browser
 
 
 async def setup_request_interception(tab, proxy: Optional[ProxyConfig]) -> None:
     """画像・メディア・フォントを abort し、必要ならプロキシ認証に応答する。"""
+    stage(
+        "プロキシ設定",
+        (
+            f"server={proxy.server} 認証=あり（Fetch.AuthRequired で応答）"
+            if proxy
+            else "プロキシなし（直結。画像・メディア・フォントの遮断のみ）"
+        ),
+    )
 
     async def on_request_paused(event: cdp.fetch.RequestPaused, connection) -> None:
         try:
@@ -534,6 +709,7 @@ async def grant_geolocation(
     browser, tab, origins: Iterable[str], lat: float, lng: float
 ) -> None:
     """権限付与 → override の順で地点を固定する。順序に意味がある。"""
+    stage("geolocation設定", f"lat={lat} lng={lng} origins={', '.join(origins)}")
     for origin in origins:
         try:
             await browser.connection.send(
@@ -542,9 +718,12 @@ async def grant_geolocation(
                     origin=origin,
                 )
             )
-        except Exception:
+        except Exception as caught:  # noqa: BLE001
             # 付与に失敗しても override 自体は効くことがあるので続行する。
-            pass
+            print(
+                f"    ! geolocation 権限の付与に失敗（続行）: {origin}: "
+                f"{type(caught).__name__}: {caught}"
+            )
 
     await tab.send(
         cdp.emulation.set_geolocation_override(
@@ -752,10 +931,12 @@ async def focus_search_box(
         element, selector = await select_first(tab, selectors, timeout=20)
     except SearchError as caught:
         info = await page_diagnostics(tab)
+        stage("検索窓不明", f"候補={', '.join(selectors)}")
         print("  ! 検索窓が見つかりません。そのときのページ:")
         for line in format_diagnostics(info):
             print(f"      {line}")
         raise SearchBoxNotFound(str(caught), info) from caught
+    stage("検索窓発見", f"selector={selector}")
 
     if profile.mobile:
         await _tap_element(tab, element)
@@ -813,6 +994,7 @@ async def type_like_human(tab, text: str) -> None:
     挿入は rawKeyDown → char → keyUp の順。keyDown に text を載せる方式は
     デスクトップでは効くがモバイル記述子だと入らない。
     """
+    stage("タイプ開始", f"{len(text)} 文字")
     for char in text:
         await tab.send(
             cdp.input_.dispatch_key_event(
@@ -869,6 +1051,7 @@ async def wait_for_results(
 
     1件見つかった時点で抜けると順次描画の途中を掴むので、必ず安定を待つ。
     """
+    stage("結果待ち", f"最大 {max_seconds:.0f} 秒 候補={', '.join(selectors)}")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max_seconds
     last = 0
@@ -898,12 +1081,15 @@ async def current_url(tab) -> str:
 
 async def read_exit_ip(tab) -> Optional[str]:
     """exit IP を取得する。失敗しても検索自体は続行する。"""
+    stage("exit IP取得", EXIT_IP_ENDPOINT)
     try:
         await tab.get(EXIT_IP_ENDPOINT)
         body = await tab.evaluate("document.body.innerText", return_by_value=True)
         if isinstance(body, str):
             return str(json.loads(body).get("ip"))
-    except Exception:
+    except Exception as caught:  # noqa: BLE001
+        # プロキシ認証やネットワークの不調はここで最初に見えることが多い。
+        print(f"    ! exit IP を取得できません（続行）: {type(caught).__name__}: {caught}")
         return None
     return None
 

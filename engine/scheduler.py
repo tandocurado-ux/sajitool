@@ -302,6 +302,7 @@ class Scheduler:
             print(
                 f"[{now:%H:%M}] ! スケジュールの読み込みに失敗しました（前回の内容で続行）: {caught}"
             )
+            dev.log_exception(caught, context="スケジュールの読み込み")
 
     def restore_from_runs(self, now: datetime) -> int:
         """当日すでに実行済みの枠を runs から復元する。
@@ -536,6 +537,9 @@ class Scheduler:
                 quiet=True,
             )
         except Exception as caught:  # noqa: BLE001 - 1件の失敗で常駐を止めない
+            # レシピの外（Chrome 起動・プロキシ組み立て・asyncio）で落ちた場合。
+            # ここで握ると原因がログに残らないので traceback ごと出す。
+            dev.log_exception(caught, context="検索の呼び出し自体が例外で error 判定")
             outcome = dev.SearchOutcome(
                 status="error",
                 platform=job.target.platform,
@@ -550,6 +554,7 @@ class Scheduler:
             print(f"  runs.id    : {run_id}（status={outcome.status} で記録）")
         except Exception as caught:  # noqa: BLE001 - 記録に失敗しても続行する
             print(f"  ! runs への記録に失敗しました: {caught}")
+            dev.log_exception(caught, context="runs への記録")
 
         self.history.append(
             alerts.ExecutionRecord(
@@ -798,6 +803,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     runner.setup_runtime()
     load_dotenv(ENGINE_DIR / ".env")
     args = parse_args(argv)
+    runner.print_environment()
 
     try:
         sb = create_supabase()

@@ -108,6 +108,7 @@ async def search(
         await tab.get(HOME_URL)
         await tab.reload()
         await tab.sleep(1.0)
+        dev.stage("最初のページ到達", await dev.current_url(tab) or HOME_URL)
 
         # --- 検索 ---
         selector = await dev.focus_search_box(
@@ -140,6 +141,11 @@ async def search(
             outcome.error = "no_results"
         else:
             outcome.status = "ok"
+        dev.stage(
+            "判定",
+            f"status={outcome.status} error={outcome.error or '-'} "
+            f"results={outcome.result_count} url={outcome.final_url[:120] or '-'}",
+        )
 
         if SEARCH_QUERY_PARAM not in outcome.final_url and outcome.status == "ok":
             # 判定は通ったがクエリ形式が想定と違う。落とさず記録だけする。
@@ -153,6 +159,7 @@ async def search(
         # どの画面で見失ったのかを runs の注記と Render のログに残す。
         outcome.status = "error"
         outcome.error = "search_box_not_found"
+        dev.log_exception(caught, context="検索窓が見つからず error 判定")
         for line in dev.format_diagnostics(caught.diagnostics):
             outcome.note(line)
         if tab is not None:
@@ -161,13 +168,14 @@ async def search(
     except Exception as caught:  # noqa: BLE001 - runs に error として残すため握る
         outcome.status = "error"
         outcome.error = f"{type(caught).__name__}: {caught}"
+        dev.log_exception(caught, context="検索フローの例外で error 判定")
         if tab is not None:
             outcome.final_url = outcome.final_url or await dev.current_url(tab)
             outcome.screenshot_path = await dev.capture_screenshot(tab, screenshot_path)
     finally:
         try:
             browser.stop()
-        except Exception:
-            pass
+        except Exception as caught:  # noqa: BLE001
+            print(f"    ! Chrome の停止に失敗（無視）: {type(caught).__name__}: {caught}")
 
     return outcome

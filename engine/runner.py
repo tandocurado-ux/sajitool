@@ -76,6 +76,13 @@ def now_jst() -> datetime:
     return datetime.now(JST)
 
 
+def print_environment() -> None:
+    """起動時に1回、Chrome・nodriver・環境変数の有無をログに出す。"""
+    print("実行環境:")
+    for line in dev.environment_lines():
+        print(f"  {line}")
+
+
 # 日本のおおよその範囲。桁の打ち間違いに気づくための目安。
 JAPAN_LAT_RANGE = (20.0, 46.0)
 JAPAN_LNG_RANGE = (122.0, 154.0)
@@ -265,6 +272,8 @@ def print_outcome(outcome: dev.SearchOutcome, *, indent: str = "  ") -> None:
         print(f"{indent}試行回数   : {outcome.attempts}（セッションを変えてリトライ済み）")
     if outcome.error:
         print(f"{indent}エラー     : {ERROR_LABELS.get(outcome.error, outcome.error)}")
+    if outcome.status != "ok":
+        print(f"{indent}最終段階   : {dev.last_stage()}")
     if outcome.screenshot_path:
         print(f"{indent}スクショ   : {outcome.screenshot_path}（デバッグ用・未保存）")
     for note in outcome.notes:

@@ -161,10 +161,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     runner.setup_runtime()
     load_dotenv(ENGINE_DIR / ".env")
     args = parse_args(argv)
+    runner.print_environment()
 
     try:
         return run_dry(args) if args.dry_run else run_scheduled(args)
     except (DatabaseError, dev.SearchError) as caught:
+        dev.log_exception(caught, context="単発実行が中断")
         print(f"エラー: {caught}", file=sys.stderr)
         return 2
 
