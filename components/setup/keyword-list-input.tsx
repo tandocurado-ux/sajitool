@@ -59,30 +59,30 @@ export function KeywordListInput({ keywords, onChange }: Props) {
         </button>
       </div>
       {duplicate ? (
-        <p className="mt-1 text-xs text-amber-700">
+        <p className="mt-1 text-xs text-warn">
           「{trimmed}」はすでに追加されています。
         </p>
       ) : null}
 
       {keywords.length === 0 ? (
-        <p className="mt-2 text-sm text-neutral-500">
+        <p className="mt-2 text-sm text-subtle">
           まだ追加されていません。あとから追加することもできます。
         </p>
       ) : (
-        <ul className="mt-3 flex flex-col divide-y divide-neutral-200 rounded border border-neutral-200">
+        <ul className="mt-3 flex flex-col divide-y divide-line rounded-md border border-line">
           {keywords.map((keyword, index) => (
             <li
               key={keyword}
               className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
             >
-              <span className="min-w-0 truncate text-neutral-900">
-                <span className="mr-2 text-xs text-neutral-400">{index + 1}</span>
+              <span className="min-w-0 truncate text-fg">
+                <span className="mr-2 text-xs text-subtle">{index + 1}</span>
                 {keyword}
               </span>
               <button
                 type="button"
                 onClick={() => onChange(keywords.filter((item) => item !== keyword))}
-                className="rounded px-2 py-0.5 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
+                className="rounded-md px-2 py-0.5 text-xs text-subtle hover:bg-hover hover:text-fg"
               >
                 削除
               </button>

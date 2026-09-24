@@ -31,7 +31,7 @@ export function AddScheduleForm({ keywords, regions }: Props) {
 
   if (keywords.length === 0 || regions.length === 0) {
     return (
-      <p className="text-sm text-neutral-500">
+      <p className="text-sm text-subtle">
         スケジュールを作るには、先に「キーワード」と「地域」をそれぞれ1件以上登録してください。
       </p>
     );

@@ -32,7 +32,7 @@ export function PlatformModeField({ value, onChange, hint }: Props) {
           </label>
         ))}
       </div>
-      {hint ? <p className="mt-1 text-xs text-neutral-500">{hint}</p> : null}
+      {hint ? <p className="mt-1 text-xs text-subtle">{hint}</p> : null}
     </fieldset>
   );
 }

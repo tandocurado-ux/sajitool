@@ -1,26 +1,142 @@
 @import "tailwindcss";
 
+/*
+ * デザイントークン。
+ *
+ * 色はすべてここで決め、コンポーネント側は Tailwind のトークン名
+ * （bg-surface / text-muted / border-line / text-ok など）だけを参照する。
+ * ダークが既定で、<html data-theme="light"> のときだけライトに切り替わる。
+ * 切り替えは components/theme-toggle.tsx と app/layout.tsx の初期化スクリプト。
+ */
 :root {
+  color-scheme: dark;
+
+  /* 面。重なるほど少しずつ明るくして奥行きを出す（真っ黒は使わない）。 */
+  --canvas: #0a0a0b;
+  --elevated: #111113;
+  --surface: #16161a;
+  --inset: #0e0e10;
+  --hover: #1e1e23;
+
+  --line: #26262c;
+  --line-strong: #3a3a42;
+
+  --fg: #ededef;
+  --muted: #a6a6ae;
+  --subtle: #8a8a94;
+
+  /* アクセントは1色（落ち着いた青）。 */
+  --accent: #7aa2f7;
+  --accent-hover: #93b4ff;
+  --accent-fg: #0a0a0b;
+  --accent-soft: #172038;
+
+  /* ステータス色。ダークでは彩度を落として明度を上げる。 */
+  --ok: #6fd08f;
+  --ok-soft: #12251a;
+  --ok-line: #1f4a2c;
+  --warn: #e6b566;
+  --warn-soft: #2a2110;
+  --warn-line: #4a3a16;
+  --danger: #f28b8b;
+  --danger-soft: #2c1516;
+  --danger-line: #5a2426;
+}
+
+:root[data-theme="light"] {
   color-scheme: light;
-  --background: #fafafa;
-  --foreground: #171717;
+
+  --canvas: #f5f5f7;
+  --elevated: #ffffff;
+  --surface: #ffffff;
+  --inset: #f3f3f5;
+  --hover: #ececf0;
+
+  --line: #e3e3e8;
+  --line-strong: #c9c9d2;
+
+  --fg: #141417;
+  --muted: #5b5b66;
+  --subtle: #67676f;
+
+  --accent: #2b62d9;
+  --accent-hover: #1f51c2;
+  --accent-fg: #ffffff;
+  --accent-soft: #e8effd;
+
+  --ok: #15803d;
+  --ok-soft: #ecfdf3;
+  --ok-line: #b7e4c7;
+  --warn: #8a5a00;
+  --warn-soft: #fff7e6;
+  --warn-line: #f0d9a8;
+  --danger: #b42318;
+  --danger-soft: #fef3f2;
+  --danger-line: #f4c7c3;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-canvas: var(--canvas);
+  --color-elevated: var(--elevated);
+  --color-surface: var(--surface);
+  --color-inset: var(--inset);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-ok-line: var(--ok-line);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-line);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-line);
+
+  /* 英数字は Inter、日本語は Noto Sans JP にフォールバック（next/font でセルフホスト）。 */
+  --font-sans:
+    var(--font-inter), var(--font-noto-sans-jp), "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN", Meiryo, system-ui, sans-serif;
+  --font-mono:
+    var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family:
-    var(--font-geist-sans),
-    "Hiragino Kaku Gothic ProN",
-    "Hiragino Sans",
-    "Noto Sans JP",
-    Meiryo,
-    sans-serif;
+  background: var(--canvas);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 見出しは太さとわずかな字詰めで階層を出す。サイズの種類は増やさない。 */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.01em;
+}
+
+/* 順位・件数・率・時刻が縦に揃うよう、表と数値は等幅数字にする。 */
+table,
+[data-numeric] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ネイティブのプルダウンもテーマの面色に合わせる。 */
+select option {
+  background: var(--surface);
+  color: var(--fg);
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--fg);
 }

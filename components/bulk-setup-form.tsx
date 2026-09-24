@@ -219,13 +219,13 @@ export function BulkSetupForm({
       <input type="hidden" name="keywords" value={keywords.join("\n")} />
 
       {previousSettings ? (
-        <section className="rounded-lg border border-neutral-300 bg-neutral-50 px-5 py-4">
+        <section className="rounded-lg border border-line-strong bg-inset px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold text-neutral-900">
+              <p className="text-sm font-semibold tracking-tight text-fg">
                 前回と同じ設定を使う
               </p>
-              <p className="mt-1 text-xs text-neutral-600">
+              <p className="mt-1 text-xs text-muted">
                 登録済みの {previousSettings.scheduleCount} 件のスケジュールから推定:{" "}
                 {PLATFORM_MODE_LABELS[previousSettings.platformMode]} ／{" "}
                 {DEVICE_MODE_LABELS[previousSettings.deviceMode]} ／{" "}
@@ -247,12 +247,12 @@ export function BulkSetupForm({
 
       {/* 1. キーワード */}
       <section className={cardClass}>
-        <h2 className="text-sm font-semibold text-neutral-900">1. キーワード</h2>
+        <h2 className="text-sm font-semibold tracking-tight text-fg">1. キーワード</h2>
 
         {knownKeywords.length > 0 ? (
           <div className="mt-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-neutral-500">
+              <p className="text-xs text-subtle">
                 登録済み {knownKeywords.length} 件（選択中 {selectedExistingKeywords.length} 件）
               </p>
               <div className="flex gap-2">
@@ -261,14 +261,14 @@ export function BulkSetupForm({
                   onClick={() =>
                     setSelectedExistingKeywords(knownKeywords.map((e) => e.keyword))
                   }
-                  className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline"
+                  className="text-xs text-subtle underline-offset-4 hover:text-fg hover:underline"
                 >
                   すべて選択
                 </button>
                 <button
                   type="button"
                   onClick={() => setSelectedExistingKeywords([])}
-                  className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline"
+                  className="text-xs text-subtle underline-offset-4 hover:text-fg hover:underline"
                 >
                   すべて解除
                 </button>
@@ -277,7 +277,7 @@ export function BulkSetupForm({
             <ul className="mt-2 grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2">
               {knownKeywords.map((entry) => (
                 <li key={entry.keyword}>
-                  <label className="flex items-start gap-2 rounded border border-neutral-200 px-3 py-2 text-sm">
+                  <label className="flex items-start gap-2 rounded-md border border-line px-3 py-2 text-sm">
                     <input
                       type="checkbox"
                       checked={selectedExistingKeywords.includes(entry.keyword)}
@@ -291,10 +291,10 @@ export function BulkSetupForm({
                       className="mt-1"
                     />
                     <span className="min-w-0">
-                      <span className="block truncate text-neutral-900">
+                      <span className="block truncate text-fg">
                         {entry.keyword}
                       </span>
-                      <span className="block text-xs text-neutral-500">
+                      <span className="block text-xs text-subtle">
                         スケジュール {entry.count} 件
                         {entry.times.length > 0 ? ` ・ ${entry.times.join(" / ")}` : ""}
                       </span>
@@ -306,7 +306,7 @@ export function BulkSetupForm({
           </div>
         ) : null}
 
-        <p className="mt-4 text-xs text-neutral-500">
+        <p className="mt-4 text-xs text-subtle">
           新しく追加するキーワード（1行に1つ。まとめて貼り付けできます）
         </p>
 
@@ -317,7 +317,7 @@ export function BulkSetupForm({
           placeholder={"不用品回収 名古屋\n不用品回収 名古屋市中区\n粗大ごみ 回収 愛知"}
           className={`${inputClass} mt-3 font-mono`}
         />
-        <p className="mt-1 text-xs text-neutral-500">
+        <p className="mt-1 text-xs text-subtle">
           対象は {keywords.length} 件
           {knownKeywords.length > 0
             ? `（登録済み ${selectedExistingKeywords.length} 件 + 新規 ${newKeywords.filter((k) => !selectedExistingKeywords.includes(k)).length} 件）`
@@ -336,16 +336,16 @@ export function BulkSetupForm({
 
       {/* 2. 地域 */}
       <section className={cardClass}>
-        <h2 className="text-sm font-semibold text-neutral-900">2. 地域</h2>
+        <h2 className="text-sm font-semibold tracking-tight text-fg">2. 地域</h2>
 
         {regions.length === 0 ? (
-          <p className="mt-2 text-sm text-neutral-500">
-            登録済みの地域はまだありません。下の「+ 地域を追加」から選んでください。
+          <p className="mt-2 text-sm text-subtle">
+            登録済みの地域はまだありません。下の追加フォームから選んでください。
           </p>
         ) : (
           <>
             <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-neutral-500">
+              <p className="text-xs text-subtle">
                 登録済み {regions.length} 件（選択中 {selectedRegionIds.length} 件）。
                 既存のキーワードとの組み合わせで足りないぶんだけ作られます。
               </p>
@@ -353,14 +353,14 @@ export function BulkSetupForm({
                 <button
                   type="button"
                   onClick={() => setSelectedRegionIds(regions.map((r) => r.id))}
-                  className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline"
+                  className="text-xs text-subtle underline-offset-4 hover:text-fg hover:underline"
                 >
                   すべて選択
                 </button>
                 <button
                   type="button"
                   onClick={() => setSelectedRegionIds([])}
-                  className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline"
+                  className="text-xs text-subtle underline-offset-4 hover:text-fg hover:underline"
                 >
                   すべて解除
                 </button>
@@ -369,7 +369,7 @@ export function BulkSetupForm({
             <ul className="mt-3 grid gap-2 sm:grid-cols-2">
               {regions.map((region) => (
                 <li key={region.id}>
-                  <label className="flex items-start gap-2 rounded border border-neutral-200 px-3 py-2 text-sm">
+                  <label className="flex items-start gap-2 rounded-md border border-line px-3 py-2 text-sm">
                     <input
                       type="checkbox"
                       name="region_ids"
@@ -379,8 +379,8 @@ export function BulkSetupForm({
                       className="mt-1"
                     />
                     <span>
-                      <span className="block text-neutral-900">{region.label}</span>
-                      <span className="block text-xs text-neutral-500">
+                      <span className="block text-fg">{region.label}</span>
+                      <span className="block text-xs text-subtle">
                         {[region.prefecture, region.city].filter(Boolean).join(" ") ||
                           "所在地未設定"}
                         {region.lat !== null && region.lng !== null
@@ -395,12 +395,22 @@ export function BulkSetupForm({
           </>
         )}
 
-        <RegionDraftList drafts={newRegions} onChange={setNewRegions} />
+        <div className="mt-4">
+          <p className="text-xs text-subtle">新しく追加する地域</p>
+          <RegionDraftList
+            drafts={newRegions}
+            onChange={setNewRegions}
+            addLabel="地域を追加"
+            existingKeys={regions
+              .filter((region) => region.prefecture && region.city)
+              .map((region) => `${region.prefecture}/${region.city}`)}
+          />
+        </div>
       </section>
 
       {/* 3. スケジュール設定 */}
       <section className={cardClass}>
-        <h2 className="mb-3 text-sm font-semibold text-neutral-900">
+        <h2 className="mb-3 text-sm font-semibold tracking-tight text-fg">
           3. スケジュール設定
         </h2>
 
@@ -413,19 +423,19 @@ export function BulkSetupForm({
 
       {/* 4. 確認と登録 */}
       <section className={cardClass}>
-        <h2 className="text-sm font-semibold text-neutral-900">4. 確認して登録</h2>
+        <h2 className="text-sm font-semibold tracking-tight text-fg">4. 確認して登録</h2>
 
-        <p className="mt-2 text-sm text-neutral-700">
+        <p className="mt-2 text-sm text-muted">
           キーワード {keywords.length} 件 × 検索エンジン {platforms.length} × 地域{" "}
           {regionCount} 件 × デバイス {devices.length} = 全 {toCreate + toSkip} 件の組み合わせ
         </p>
-        <p className="mt-1 text-sm text-neutral-700">
-          このうち<span className="text-lg font-semibold text-neutral-900">
+        <p className="mt-1 text-sm text-muted">
+          このうち<span className="text-lg font-semibold tracking-tight tabular-nums text-fg">
             {" "}新規に作られるのは {toCreate} 件
           </span>
           {toSkip > 0 ? `（${toSkip} 件は登録済みのためスキップ）` : ""}
         </p>
-        <p className="mt-1 text-sm text-neutral-500">{describeTiming(timing)}</p>
+        <p className="mt-1 text-sm text-subtle">{describeTiming(timing)}</p>
 
         <SchedulePreview
           plan={plan}
@@ -446,11 +456,11 @@ export function BulkSetupForm({
 
         <FormError message={state.error} />
         {state.progress ? (
-          <p className="mt-2 text-sm text-neutral-700">{state.progress}</p>
+          <p className="mt-2 text-sm text-muted">{state.progress}</p>
         ) : null}
 
         {state.warnings.length > 0 ? (
-          <ul className="mt-2 list-disc pl-5 text-sm text-amber-700">
+          <ul className="mt-2 list-disc pl-5 text-sm text-warn">
             {state.warnings.map((warning) => (
               <li key={warning}>{warning}</li>
             ))}
@@ -458,7 +468,7 @@ export function BulkSetupForm({
         ) : null}
 
         {summary ? (
-          <div className="mt-3 rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+          <div className="mt-3 rounded-md border border-ok-line bg-ok-soft px-4 py-3 text-sm text-ok">
             <p className="font-semibold">登録しました。</p>
             <ul className="mt-1 list-disc pl-5">
               <li>

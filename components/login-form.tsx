@@ -97,18 +97,18 @@ export function LoginForm() {
   }
 
   return (
-    <div className="w-full max-w-sm rounded-lg border border-neutral-200 bg-white p-6">
-      <h1 className="text-lg font-semibold text-neutral-900">サジェツール</h1>
-      <p className="mt-1 text-sm text-neutral-500">
+    <div className="w-full max-w-sm rounded-lg border border-line bg-surface p-6">
+      <h1 className="text-lg font-semibold tracking-tight text-fg">サジェツール</h1>
+      <p className="mt-1 text-sm text-subtle">
         {mode === "signin" ? "ログインしてください" : "新規アカウントを作成します"}
       </p>
 
-      <div className="mt-4 grid grid-cols-2 gap-1 rounded bg-neutral-100 p-1">
+      <div className="mt-4 grid grid-cols-2 gap-1 rounded-md bg-inset p-1">
         <button
           type="button"
           onClick={() => switchMode("signin")}
-          className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
-            mode === "signin" ? "bg-white text-neutral-900" : "text-neutral-500"
+          className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+            mode === "signin" ? "bg-surface text-fg shadow-sm ring-1 ring-line" : "text-subtle hover:text-fg"
           }`}
         >
           ログイン
@@ -116,8 +116,8 @@ export function LoginForm() {
         <button
           type="button"
           onClick={() => switchMode("signup")}
-          className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
-            mode === "signup" ? "bg-white text-neutral-900" : "text-neutral-500"
+          className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+            mode === "signup" ? "bg-surface text-fg shadow-sm ring-1 ring-line" : "text-subtle hover:text-fg"
           }`}
         >
           新規登録
@@ -167,7 +167,7 @@ export function LoginForm() {
 
         <FormError message={error} />
         {message ? (
-          <p className="text-sm text-green-700" role="status">
+          <p className="text-sm text-ok" role="status">
             {message}
           </p>
         ) : null}

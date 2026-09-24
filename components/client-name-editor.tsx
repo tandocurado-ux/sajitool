@@ -37,12 +37,12 @@ export function ClientNameEditor({ id, name, children }: Props) {
             setDraft(name);
             setEditing(true);
           }}
-          className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline"
+          className="text-xs text-subtle underline-offset-4 hover:text-fg hover:underline"
         >
           名前を編集
         </button>
         {state.error ? (
-          <span role="alert" className="text-xs text-red-600">
+          <span role="alert" className="text-xs text-danger">
             {state.error}
           </span>
         ) : null}
@@ -78,7 +78,7 @@ export function ClientNameEditor({ id, name, children }: Props) {
         キャンセル
       </button>
       {state.error ? (
-        <span role="alert" className="text-xs text-red-600">
+        <span role="alert" className="text-xs text-danger">
           {state.error}
         </span>
       ) : null}

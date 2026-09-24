@@ -37,95 +37,95 @@ export function ClientsTable({ rows, runWindowDays }: Props) {
           aria-label="顧客名で絞り込む"
           className={`${inputClass} max-w-xs`}
         />
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-subtle">
           {filtered.length} / {rows.length} 件
         </p>
       </div>
 
       {filtered.length === 0 ? (
-        <p className="mt-4 text-sm text-neutral-500">
+        <p className="mt-4 text-sm text-subtle">
           {rows.length === 0
             ? "まだ顧客が登録されていません。"
             : "条件に合う顧客がありません。"}
         </p>
       ) : (
         <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[960px] text-left text-sm">
+          <table className="w-full min-w-[820px] text-left text-sm">
             <thead>
-              <tr className="border-b border-neutral-200 text-xs text-neutral-500">
-                <th className="py-2 pr-4 font-medium">顧客名</th>
-                <th className="py-2 pr-4 font-medium">キーワード</th>
-                <th className="py-2 pr-4 font-medium">地域</th>
-                <th className="py-2 pr-4 font-medium">スケジュール</th>
-                <th className="py-2 pr-4 font-medium">
+              <tr className="border-b border-line text-xs font-medium tracking-wide text-subtle">
+                <th className="whitespace-nowrap py-2 pr-4 font-medium">顧客名</th>
+                <th className="whitespace-nowrap py-2 pr-4 font-medium">キーワード</th>
+                <th className="whitespace-nowrap py-2 pr-4 font-medium">地域</th>
+                <th className="whitespace-nowrap py-2 pr-4 font-medium">スケジュール</th>
+                <th className="whitespace-nowrap py-2 pr-4 font-medium">
                   直近実行
                   <span className="ml-1 font-normal">（{runWindowDays}日以内）</span>
                 </th>
-                <th className="py-2 pr-4 font-medium">
+                <th className="whitespace-nowrap py-2 pr-4 font-medium">
                   本日の実行
                   <span className="ml-1 font-normal">（JST）</span>
                 </th>
-                <th className="py-2 font-medium">アクション</th>
+                <th className="whitespace-nowrap py-2 font-medium">アクション</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-neutral-200">
+            <tbody className="divide-y divide-line">
               {filtered.map((row) => (
-                <tr key={row.client.id}>
-                  <td className="py-3 pr-4">
+                <tr key={row.client.id} className="transition-colors hover:bg-hover">
+                  <td className="py-2.5 pr-4">
                     <ClientNameEditor id={row.client.id} name={row.client.name}>
                       <Link
                         href={`/clients/${row.client.id}`}
-                        className="font-medium text-neutral-900 underline-offset-4 hover:underline"
+                        className="font-medium text-fg underline-offset-4 hover:text-accent hover:underline"
                       >
                         {row.client.name}
                       </Link>
                     </ClientNameEditor>
                   </td>
 
-                  <td className="whitespace-nowrap py-3 pr-4 text-neutral-900">
+                  <td className="whitespace-nowrap py-2.5 pr-4 text-fg">
                     {row.keywordCount}
-                    <span className="ml-1 text-xs text-neutral-500">
+                    <span className="ml-1 text-xs text-subtle">
                       （G {row.googleKeywords} / Y {row.yahooKeywords}）
                     </span>
                   </td>
 
-                  <td className="whitespace-nowrap py-3 pr-4 text-neutral-900">
+                  <td className="whitespace-nowrap py-2.5 pr-4 text-fg">
                     {row.regionCount}
                   </td>
 
-                  <td className="whitespace-nowrap py-3 pr-4 text-neutral-900">
+                  <td className="whitespace-nowrap py-2.5 pr-4 text-fg">
                     {row.enabledScheduleCount}
-                    <span className="text-neutral-500"> / {row.scheduleCount}</span>
+                    <span className="text-subtle"> / {row.scheduleCount}</span>
                   </td>
 
-                  <td className="whitespace-nowrap py-3 pr-4">
+                  <td className="whitespace-nowrap py-2.5 pr-4">
                     {row.lastRunAt && row.lastRunStatus ? (
                       <span className="flex flex-col gap-1">
                         <RunStatusBadge status={row.lastRunStatus} />
-                        <span className="text-xs text-neutral-500">
+                        <span className="text-xs text-subtle">
                           {formatRunAt(row.lastRunAt)}
                         </span>
                       </span>
                     ) : (
-                      <span className="text-neutral-400">-</span>
+                      <span className="text-subtle">-</span>
                     )}
                   </td>
 
-                  <td className="whitespace-nowrap py-3 pr-4 text-neutral-900">
+                  <td className="whitespace-nowrap py-2.5 pr-4 text-fg">
                     <DailyProgressSummary progress={row.today} />
                   </td>
 
-                  <td className="py-3">
+                  <td className="py-2.5">
                     <div className="flex flex-wrap items-center gap-3">
                       <Link
                         href={`/clients/${row.client.id}`}
-                        className="text-xs text-neutral-700 underline-offset-4 hover:underline"
+                        className="text-xs text-muted underline-offset-4 hover:text-accent hover:underline"
                       >
                         詳細
                       </Link>
                       <Link
                         href={`/clients/${row.client.id}/setup`}
-                        className="text-xs text-neutral-700 underline-offset-4 hover:underline"
+                        className="text-xs text-muted underline-offset-4 hover:text-accent hover:underline"
                       >
                         まとめて登録
                       </Link>

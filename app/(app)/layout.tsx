@@ -8,13 +8,13 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const user = await requireUser();
 
   return (
-    <div className="min-h-screen bg-neutral-50">
+    <div className="min-h-screen bg-canvas">
       {/* useSearchParams を使うので Suspense で包む。 */}
       <Suspense fallback={null}>
         <AppSidebar email={user.email} signOutAction={signOut} />
       </Suspense>
 
-      <main className="mx-auto w-full max-w-5xl px-6 py-8 md:pl-[15.5rem]">
+      <main className="mx-auto w-full max-w-6xl px-6 py-8 md:pl-[15.5rem]">
         {children}
       </main>
     </div>

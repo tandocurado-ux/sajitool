@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useState } from "react";
+import { ThemeToggle } from "./theme-toggle";
 import { subtleButtonClass } from "./ui";
 
 type NavItem = {
@@ -43,19 +44,19 @@ export function AppSidebar({ email, signOutAction }: Props) {
   return (
     <>
       {/* モバイル用のバー。ここからサイドバーを開閉する。 */}
-      <div className="flex items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3 md:hidden">
+      <div className="flex items-center gap-3 border-b border-line bg-elevated px-4 py-3 md:hidden">
         <button
           type="button"
           onClick={() => setOpen(true)}
           aria-label="メニューを開く"
           aria-expanded={open}
-          className="rounded border border-neutral-300 px-2 py-1 text-neutral-700"
+          className="rounded-md border border-line-strong px-2 py-1 text-muted"
         >
           <span aria-hidden className="block text-lg leading-none">
             ☰
           </span>
         </button>
-        <span className="text-sm font-semibold text-neutral-900">サジェツール</span>
+        <span className="text-sm font-semibold tracking-tight text-fg">サジェツール</span>
       </div>
 
       {open ? (
@@ -63,28 +64,29 @@ export function AppSidebar({ email, signOutAction }: Props) {
           type="button"
           aria-label="メニューを閉じる"
           onClick={() => setOpen(false)}
-          className="fixed inset-0 z-30 bg-neutral-900/30 md:hidden"
+          className="fixed inset-0 z-30 bg-black/60 md:hidden"
         />
       ) : null}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-neutral-200 bg-white transition-transform md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-line bg-elevated transition-transform md:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="flex items-center justify-between border-b border-neutral-200 px-5 py-4">
+        <div className="flex items-center justify-between border-b border-line px-5 py-4">
           <Link
             href="/dashboard"
             onClick={() => setOpen(false)}
-            className="text-sm font-semibold text-neutral-900"
+            className="text-sm font-semibold tracking-tight text-fg"
           >
+            <span className="mr-2 inline-block h-2 w-2 rounded-full bg-accent align-middle" aria-hidden />
             サジェツール
           </Link>
           <button
             type="button"
             onClick={() => setOpen(false)}
             aria-label="メニューを閉じる"
-            className="text-neutral-500 md:hidden"
+            className="text-subtle md:hidden"
           >
             ×
           </button>
@@ -100,10 +102,10 @@ export function AppSidebar({ email, signOutAction }: Props) {
                     href={item.href}
                     onClick={() => setOpen(false)}
                     aria-current={active ? "page" : undefined}
-                    className={`block rounded px-3 py-2 text-sm transition-colors ${
+                    className={`block rounded-md px-3 py-1.5 text-sm transition-colors ${
                       active
-                        ? "bg-neutral-900 font-medium text-white"
-                        : "text-neutral-700 hover:bg-neutral-100"
+                        ? "bg-accent-soft font-medium text-accent"
+                        : "text-muted hover:bg-hover hover:text-fg"
                     }`}
                   >
                     {item.label}
@@ -114,9 +116,10 @@ export function AppSidebar({ email, signOutAction }: Props) {
           </ul>
         </nav>
 
-        <div className="border-t border-neutral-200 px-5 py-4">
+        <div className="flex flex-col gap-3 border-t border-line px-5 py-4">
+          <ThemeToggle />
           {email ? (
-            <p className="mb-2 truncate text-xs text-neutral-500" title={email}>
+            <p className="truncate text-xs text-subtle" title={email}>
               {email}
             </p>
           ) : null}

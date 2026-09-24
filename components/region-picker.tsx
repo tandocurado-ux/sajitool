@@ -1,5 +1,6 @@
 "use client";
 
+import type { KeyboardEvent, RefObject } from "react";
 import {
   PREFECTURES,
   buildRegionLabel,
@@ -41,6 +42,10 @@ type Props = {
   draft: RegionDraft;
   onChange: (patch: Partial<RegionDraft>) => void;
   idPrefix: string;
+  /** 市区町村のプルダウンにフォーカスを戻すための参照（連続入力用）。 */
+  cityRef?: RefObject<HTMLSelectElement | null>;
+  /** 市区町村・ラベルで Enter を押したときに呼ぶ（「追加」と同じ動き）。 */
+  onSubmitIntent?: () => void;
 };
 
 /**
@@ -48,11 +53,24 @@ type Props = {
  * 緯度経度は市区町村の代表点から自動で決まるので編集させない
  * （手入力していた頃に経度の桁を打ち間違えて気づけない事故があったため）。
  */
-export function RegionPicker({ draft, onChange, idPrefix }: Props) {
+export function RegionPicker({
+  draft,
+  onChange,
+  idPrefix,
+  cityRef,
+  onSubmitIntent,
+}: Props) {
   const cities = municipalitiesOf(draft.prefecture);
   const municipality = isRegionDraftFilled(draft)
     ? findMunicipality(draft.prefecture, draft.city)
     : null;
+
+  function handleEnter(event: KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Enter" || !onSubmitIntent) return;
+    // Enter でフォーム全体が送信されないようにして「追加」に回す。
+    event.preventDefault();
+    onSubmitIntent();
+  }
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
@@ -84,8 +102,10 @@ export function RegionPicker({ draft, onChange, idPrefix }: Props) {
         </label>
         <select
           id={`${idPrefix}-city`}
+          ref={cityRef}
           value={draft.city}
           onChange={(event) => onChange({ city: event.target.value })}
+          onKeyDown={handleEnter}
           disabled={cities.length === 0}
           className={inputClass}
         >
@@ -109,6 +129,7 @@ export function RegionPicker({ draft, onChange, idPrefix }: Props) {
           type="text"
           value={draft.label}
           onChange={(event) => onChange({ label: event.target.value })}
+          onKeyDown={handleEnter}
           placeholder={
             isRegionDraftFilled(draft)
               ? buildRegionLabel(draft.prefecture, draft.city)
@@ -120,7 +141,10 @@ export function RegionPicker({ draft, onChange, idPrefix }: Props) {
 
       <div>
         <span className={labelClass}>緯度・経度（自動）</span>
-        <p className="rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-600">
+        <p
+          data-numeric
+          className="rounded-md border border-line bg-inset px-3 py-2 font-mono text-sm text-muted"
+        >
           {municipality
             ? `${municipality.lat}, ${municipality.lng}`
             : "市区町村を選ぶと自動で設定されます"}

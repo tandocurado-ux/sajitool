@@ -7,10 +7,10 @@ export const metadata = {
 
 export default function LoginPage() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-neutral-50 p-6">
+    <main className="flex min-h-screen items-center justify-center bg-canvas p-6">
       <Suspense
         fallback={
-          <div className="w-full max-w-sm rounded-lg border border-neutral-200 bg-white p-6 text-sm text-neutral-500">
+          <div className="w-full max-w-sm rounded-lg border border-line bg-surface p-6 text-sm text-subtle">
             読み込み中…
           </div>
         }

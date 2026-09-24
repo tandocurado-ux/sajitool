@@ -23,10 +23,10 @@ export function SchedulePreview({
 
   return (
     <div
-      className={`mt-3 rounded border px-4 py-3 text-sm ${
+      className={`mt-3 rounded-md border px-4 py-3 text-sm ${
         plan.overCapacity
-          ? "border-red-300 bg-red-50 text-red-700"
-          : "border-neutral-200 bg-neutral-50 text-neutral-700"
+          ? "border-danger-line bg-danger-soft text-danger"
+          : "border-line bg-inset text-muted"
       }`}
     >
       <p>

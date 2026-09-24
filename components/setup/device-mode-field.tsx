@@ -30,7 +30,7 @@ export function DeviceModeField({ value, onChange }: Props) {
           </label>
         ))}
       </div>
-      <p className="mt-1 text-xs text-neutral-500">
+      <p className="mt-1 text-xs text-subtle">
         「両方」を選ぶと PC とモバイルで2件ずつ作成します。
       </p>
     </fieldset>

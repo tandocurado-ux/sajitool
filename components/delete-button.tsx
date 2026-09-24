@@ -35,7 +35,7 @@ export function DeleteButton({
         {pending ? "削除中…" : label}
       </button>
       {state.error ? (
-        <span role="alert" className="text-xs text-red-600">
+        <span role="alert" className="text-xs text-danger">
           {state.error}
         </span>
       ) : null}

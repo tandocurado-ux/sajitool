@@ -36,14 +36,14 @@ export default async function ClientSetupPage(
       <div>
         <Link
           href={`/clients/${id}`}
-          className="text-xs text-neutral-500 underline-offset-4 hover:underline"
+          className="text-xs text-subtle underline-offset-4 hover:underline"
         >
           ← {client.name} の登録内容へ戻る
         </Link>
-        <h1 className="mt-2 text-xl font-semibold text-neutral-900">
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight text-fg">
           まとめて登録 — {client.name}
         </h1>
-        <p className="mt-1 text-sm text-neutral-500">
+        <p className="mt-1 text-sm text-subtle">
           登録済みのキーワードと地域は最初から選択済みです。増やしたぶんだけ足せば、
           不足しているスケジュールだけが作られます（重複はスキップ）。
         </p>

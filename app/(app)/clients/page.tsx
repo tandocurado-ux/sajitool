@@ -17,8 +17,8 @@ export default async function ClientsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-neutral-900">顧客管理</h1>
-          <p className="mt-1 text-sm text-neutral-500">
+          <h1 className="text-2xl font-semibold tracking-tight text-fg">顧客管理</h1>
+          <p className="mt-1 text-sm text-subtle">
             顧客をクリックすると、キーワード・地域・スケジュールを登録できます。
           </p>
         </div>

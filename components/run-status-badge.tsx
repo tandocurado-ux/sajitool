@@ -5,9 +5,9 @@ import {
 } from "@/lib/types";
 
 const STATUS_CLASSES: Record<RunStatus, string> = {
-  ok: "border-green-200 bg-green-50 text-green-700",
-  blocked: "border-red-200 bg-red-50 text-red-700",
-  error: "border-amber-200 bg-amber-50 text-amber-700",
+  ok: "border-ok-line bg-ok-soft text-ok",
+  blocked: "border-danger-line bg-danger-soft text-danger",
+  error: "border-warn-line bg-warn-soft text-warn",
 };
 
 /**
@@ -16,13 +16,13 @@ const STATUS_CLASSES: Record<RunStatus, string> = {
  */
 export function RunStatusBadge({ status }: { status: RunStatus }) {
   const className =
-    STATUS_CLASSES[status] ?? "border-neutral-200 bg-neutral-50 text-neutral-600";
+    STATUS_CLASSES[status] ?? "border-line bg-inset text-muted";
   const label = RUN_STATUS_LABELS[status] ?? status;
   const description = RUN_STATUS_DESCRIPTIONS[status];
   return (
     <span
       title={description ? `${status}: ${description}` : status}
-      className={`inline-flex items-baseline gap-1 rounded border px-2 py-0.5 text-xs font-medium ${className}`}
+      className={`inline-flex items-baseline gap-1 whitespace-nowrap rounded-md border px-2 py-0.5 text-xs font-medium ${className}`}
     >
       {label}
       {label !== status ? (

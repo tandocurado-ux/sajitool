@@ -63,20 +63,20 @@ export function TimePicker({
       </div>
 
       {times.length === 0 ? (
-        <p className="mt-2 text-xs text-red-600">
+        <p className="mt-2 text-xs text-danger">
           時刻を1つ以上追加してください。
         </p>
       ) : (
         <ul className="mt-2 flex flex-wrap gap-2">
           {times.map((time) => (
             <li key={time}>
-              <span className="inline-flex items-center gap-1 rounded border border-neutral-300 bg-neutral-50 py-1 pl-2 pr-1 text-sm text-neutral-800">
+              <span className="inline-flex items-center gap-1 rounded-md border border-line-strong bg-inset py-1 pl-2 pr-1 text-sm text-fg">
                 {time}
                 <button
                   type="button"
                   onClick={() => removeTime(time)}
                   aria-label={`${time} を削除`}
-                  className="rounded px-1 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900"
+                  className="rounded-md px-1 text-subtle hover:bg-hover hover:text-fg"
                 >
                   ×
                 </button>

@@ -26,7 +26,7 @@ export function ScheduleToggle({ scheduleId, clientId, enabled }: Props) {
         {pending ? "更新中…" : enabled ? "無効にする" : "有効にする"}
       </button>
       {state.error ? (
-        <span role="alert" className="text-xs text-red-600">
+        <span role="alert" className="text-xs text-danger">
           {state.error}
         </span>
       ) : null}

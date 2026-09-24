@@ -88,7 +88,7 @@ export function ScheduleTimingFields({ value, onChange }: Props) {
               times={value.times}
               onChange={(times) => onChange({ times })}
             />
-            <p className="mt-1 text-xs text-neutral-500">
+            <p className="mt-1 text-xs text-subtle">
               作成するスケジュールすべてに同じ時刻が入ります。件数が多いと
               同じ時刻に集中して、計測が後ろにずれ込みます。
             </p>
@@ -131,7 +131,7 @@ export function ScheduleTimingFields({ value, onChange }: Props) {
                   </option>
                 ))}
               </select>
-              <span className="text-sm text-neutral-500">〜</span>
+              <span className="text-sm text-subtle">〜</span>
               <select
                 name="spread_end"
                 value={value.spreadEnd}
@@ -147,11 +147,11 @@ export function ScheduleTimingFields({ value, onChange }: Props) {
               </select>
             </div>
             {slots.length === 0 ? (
-              <p className="mt-1 text-sm text-red-600">
+              <p className="mt-1 text-sm text-danger">
                 終了時刻は開始時刻と同じか、それより後にしてください。
               </p>
             ) : (
-              <p className="mt-1 text-xs text-neutral-500">
+              <p className="mt-1 text-xs text-subtle">
                 {slots.length} 枠（{slots[0]} 〜 {slots[slots.length - 1]}）に
                 均等に割り振ります。1スケジュールあたり {value.rotations} 個の時刻が入ります。
               </p>
