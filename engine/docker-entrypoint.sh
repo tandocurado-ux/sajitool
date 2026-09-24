@@ -30,8 +30,9 @@ if [ "${ENGINE_HEADLESS:-0}" != "1" ]; then
   fi
 
   if [ "${reuse}" = "0" ]; then
-    echo "Xvfb を起動します (DISPLAY=${display}, ${XVFB_SCREEN:-1920x1080x24})"
-    Xvfb "${display}" -screen 0 "${XVFB_SCREEN:-1920x1080x24}" -nolisten tcp &
+    # 既定は 1366x768（メモリ節約）。環境変数 XVFB_SCREEN があればそちらを優先。
+    echo "Xvfb を起動します (DISPLAY=${display}, ${XVFB_SCREEN:-1366x768x24})"
+    Xvfb "${display}" -screen 0 "${XVFB_SCREEN:-1366x768x24}" -nolisten tcp &
 
     waited=0
     while [ ! -e "${socket}" ]; do

@@ -67,10 +67,12 @@ RUN chmod +x /app/docker-entrypoint.sh
 # レシピの必須条件（--lang=ja / Accept-Language / TZ=Asia/Tokyo）は
 # device.py 側で固定している。ここで足すのはコンテナ差を吸収する分だけ。
 # CHROME_PATH は上で展開した Chrome for Testing の実バイナリを指す。
+# XVFB_SCREEN はメモリ節約のため 1366x768（Render の再起動＝メモリ溢れ対策）。
+# Chrome の引数（--js-flags 等）は検知への影響を避けるため足さない。
 ENV CHROME_PATH=/opt/chrome/chrome \
     CHROME_EXTRA_ARGS="--no-sandbox --disable-dev-shm-usage --disable-gpu" \
     DISPLAY=:99 \
-    XVFB_SCREEN=1920x1080x24
+    XVFB_SCREEN=1366x768x24
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["python", "scheduler.py"]

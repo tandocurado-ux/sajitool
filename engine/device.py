@@ -221,10 +221,7 @@ async def _chrome_self_check(headless: bool) -> str:
         )
         return f"{product}, CDP {protocol}, V8 {js_version}"
     finally:
-        try:
-            browser.stop()
-        except Exception as caught:  # noqa: BLE001
-            print(f"    ! セルフチェック後の Chrome 停止に失敗（無視）: {type(caught).__name__}: {caught}")
+        await close_browser(browser, context="セルフチェック")
 
 
 def chrome_self_check(*, headless: bool) -> bool:
@@ -776,11 +773,12 @@ async def grant_geolocation(
 # --------------------------------------------------------------------------
 
 
-async def page_diagnostics(tab) -> dict[str, str]:
+async def page_diagnostics(tab) -> dict[str, Any]:
     """いま何が表示されているのかを掴むための最小情報。
 
     検索窓が見つからないとき、同意画面なのか別レイアウトなのか
-    /sorry/ の亜種なのかをログだけで判別できるようにする。
+    /sorry/ の亜種なのか、そもそも描画が終わっていない（body が空）のかを
+    ログだけで判別できるようにする。readyState と長さはそのためのもの。
     """
     try:
         raw = await tab.evaluate(
@@ -789,6 +787,9 @@ async def page_diagnostics(tab) -> dict[str, str]:
               url: location.href,
               host: location.host,
               title: document.title || '',
+              readyState: document.readyState,
+              bodyLength: document.body ? document.body.innerText.length : -1,
+              htmlLength: document.documentElement ? document.documentElement.outerHTML.length : -1,
               body: (document.body ? document.body.innerText : '').slice(0, 500)
             }))()
             """,
@@ -799,13 +800,28 @@ async def page_diagnostics(tab) -> dict[str, str]:
         return {}
 
 
-def format_diagnostics(info: dict[str, str]) -> list[str]:
+def describe_page_state(info: dict[str, Any]) -> str:
+    """readyState と body / HTML の長さを1行にする（描画未完了の切り分け用）。"""
+
+    def length(key: str) -> str:
+        value = info.get(key, "-")
+        # -1 は要素そのものが無い（body がまだ無い＝描画前）ことを表す。
+        return "なし" if value == -1 else f"{value} 文字"
+
+    return (
+        f"readyState={info.get('readyState') or '-'} "
+        f"body={length('bodyLength')} html={length('htmlLength')}"
+    )
+
+
+def format_diagnostics(info: dict[str, Any]) -> list[str]:
     body = " / ".join(
-        line.strip() for line in (info.get("body") or "").splitlines() if line.strip()
+        line.strip() for line in str(info.get("body") or "").splitlines() if line.strip()
     )
     return [
-        f"URL   : {(info.get('url') or '-')[:200]}",
-        f"title : {(info.get('title') or '-')[:200]}",
+        f"URL   : {str(info.get('url') or '-')[:200]}",
+        f"title : {str(info.get('title') or '-')[:200]}",
+        f"state : {describe_page_state(info)}",
         f"body  : {body[:500] or '-'}",
     ]
 
@@ -955,6 +971,91 @@ async def _tap_element(tab, element) -> bool:
     return True
 
 
+# 検索窓のセレクタを待つ秒数（初回と、リロード後の再試行でそれぞれこの秒数）。
+SEARCH_BOX_TIMEOUT_SECONDS = 20.0
+# リロード直後に描画を落ち着かせる秒数。
+RELOAD_SETTLE_SECONDS = 1.5
+
+
+async def _reload_and_wait_for_search_box(tab, selectors: Sequence[str]):
+    """同じセッションでリロードしてから、もう一度だけ検索窓を待つ。
+
+    ここでも見つからなければ SearchBoxNotFound を投げ、その先で
+    従来どおりの「セッション変更リトライ（1回）」に進む。
+    """
+    before = await page_diagnostics(tab)
+    stage(
+        "リロード再試行",
+        f"検索窓が {SEARCH_BOX_TIMEOUT_SECONDS:.0f} 秒で見つからず"
+        f"（{describe_page_state(before)}）。同じセッションでリロードします",
+    )
+    try:
+        await tab.reload()
+        await tab.sleep(RELOAD_SETTLE_SECONDS)
+    except Exception as caught:  # noqa: BLE001 - リロード自体の失敗も待ち直しに回す
+        print(f"    ! リロードに失敗（そのまま待ち直します）: {type(caught).__name__}: {caught}")
+
+    after = await page_diagnostics(tab)
+    print(f"    リロード後: {describe_page_state(after)}")
+
+    try:
+        return await select_first(tab, selectors, timeout=SEARCH_BOX_TIMEOUT_SECONDS)
+    except SearchError as caught:
+        info = await page_diagnostics(tab)
+        stage("検索窓不明", f"候補={', '.join(selectors)}（リロード再試行後も見つからず）")
+        print("  ! 検索窓が見つかりません。そのときのページ:")
+        for line in format_diagnostics(info):
+            print(f"      {line}")
+        raise SearchBoxNotFound(str(caught), info) from caught
+
+
+# browser.stop() 後にプロセス終了を待つ秒数。超えたら kill する。
+BROWSER_STOP_TIMEOUT_SECONDS = 8.0
+BROWSER_KILL_TIMEOUT_SECONDS = 5.0
+
+
+async def close_browser(browser, *, context: str = "") -> None:
+    """Chrome を確実に終わらせ、プロセスが消えたことを確認してから戻る。
+
+    nodriver の browser.stop() は terminate を送るだけで終了を待たない。
+    次の Chrome（セッション変更リトライや次の実行）を起動する前に呼び、
+    同時に2つの Chrome が存在する瞬間を作らない（メモリ溢れの対策）。
+    """
+    proc = getattr(browser, "_process", None)
+    pid = getattr(proc, "pid", None) or getattr(browser, "_process_pid", None)
+    label = f"Chrome停止{('・' + context) if context else ''}"
+
+    try:
+        browser.stop()
+    except Exception as caught:  # noqa: BLE001 - 停止処理で落とさない
+        print(f"    ! browser.stop() で例外（続行）: {type(caught).__name__}: {caught}")
+
+    if proc is None:
+        stage(f"{label}完了", f"pid={pid or '-'}（プロセス情報なし）")
+        return
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=BROWSER_STOP_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        print(
+            f"    ! Chrome (pid={pid}) が {BROWSER_STOP_TIMEOUT_SECONDS:.0f} 秒で"
+            "終了しないため kill します"
+        )
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        except Exception as caught:  # noqa: BLE001
+            print(f"    ! kill に失敗: {type(caught).__name__}: {caught}")
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=BROWSER_KILL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            stage(f"{label}失敗", f"pid={pid} のプロセスが残っています")
+            return
+
+    stage(f"{label}完了", f"pid={pid} returncode={proc.returncode}")
+
+
 async def focus_search_box(
     tab,
     profile: DeviceProfile,
@@ -967,15 +1068,16 @@ async def focus_search_box(
     Enter を押すことになり not_searched になる。
     """
     try:
-        element, selector = await select_first(tab, selectors, timeout=20)
-    except SearchError as caught:
-        info = await page_diagnostics(tab)
-        stage("検索窓不明", f"候補={', '.join(selectors)}")
-        print("  ! 検索窓が見つかりません。そのときのページ:")
-        for line in format_diagnostics(info):
-            print(f"      {line}")
-        raise SearchBoxNotFound(str(caught), info) from caught
-    stage("検索窓発見", f"selector={selector}")
+        element, selector = await select_first(
+            tab, selectors, timeout=SEARCH_BOX_TIMEOUT_SECONDS
+        )
+        found_how = ""
+    except SearchError:
+        # Yahoo! トップは body が空のまま（描画未完了）で待ちが切れることがある。
+        # セッションを捨てる前に、同じセッションでリロードして待ち直す。
+        element, selector = await _reload_and_wait_for_search_box(tab, selectors)
+        found_how = "（リロード後）"
+    stage("検索窓発見", f"selector={selector}{found_how}")
 
     if profile.mobile:
         await _tap_element(tab, element)

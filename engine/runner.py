@@ -213,9 +213,11 @@ def run_search(
     reason = first_status if first_status != "error" else (first_error or "error")
     print(
         f"  ! {reason} のため、セッションを変えて1回だけリトライします"
-        f"（1回目の exit IP: {first_ip or '-'}）"
+        f"（1回目の exit IP: {first_ip or '-'}。1回目の Chrome は停止確認済み）"
     )
 
+    # 1回目の _search は finally で close_browser を await してから戻るので、
+    # ここに来た時点で前の Chrome プロセスは終了している（同時に2つは動かさない）。
     retry = asyncio.run(_search(**kwargs))
     retry.attempts = 2
     retry.note(

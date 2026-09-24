@@ -173,9 +173,8 @@ async def search(
             outcome.final_url = outcome.final_url or await dev.current_url(tab)
             outcome.screenshot_path = await dev.capture_screenshot(tab, screenshot_path)
     finally:
-        try:
-            browser.stop()
-        except Exception as caught:  # noqa: BLE001
-            print(f"    ! Chrome の停止に失敗（無視）: {type(caught).__name__}: {caught}")
+        # ok / error を問わず、プロセスが消えたことを確認してから戻る
+        # （次の Chrome を起動する前に必ず終わっている状態にする）。
+        await dev.close_browser(browser)
 
     return outcome
