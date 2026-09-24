@@ -106,8 +106,12 @@ async def search(
         else:
             outcome.note("regions に lat/lng が無いため地点指定なしで実行しました。")
         await tab.get(HOME_URL)
-        await tab.reload()
+        # 遅い IP だと遷移が終わる前に reload を送って CDP が切れるので、
+        # 完了を待ってから必ずリロードする（順序は get → reload のまま）。
+        await dev.wait_for_ready(tab, label="トップ到達待ち")
+        await dev.reload_with_retry(tab, HOME_URL)
         await tab.sleep(1.0)
+        await dev.wait_for_ready(tab, label="リロード後待ち")
         dev.stage("最初のページ到達", await dev.current_url(tab) or HOME_URL)
 
         # --- 検索 ---
@@ -167,7 +171,10 @@ async def search(
             outcome.screenshot_path = await dev.capture_screenshot(tab, screenshot_path)
     except Exception as caught:  # noqa: BLE001 - runs に error として残すため握る
         outcome.status = "error"
-        outcome.error = f"{type(caught).__name__}: {caught}"
+        # CDP 切断（protocol_error）はセッション変更リトライの対象にするため分類する。
+        outcome.error = dev.classify_error(caught)
+        if outcome.error == dev.PROTOCOL_ERROR:
+            outcome.note(f"CDP 通信エラー: {type(caught).__name__}: {caught}")
         dev.log_exception(caught, context="検索フローの例外で error 判定")
         if tab is not None:
             outcome.final_url = outcome.final_url or await dev.current_url(tab)

@@ -35,10 +35,11 @@ ERROR_LABELS = {
     "not_searched": "検索結果ページに到達しませんでした（検索が成立していない）",
     "no_results": "検索結果ページには着いたが結果要素が見つかりませんでした",
     "search_box_not_found": "検索窓が見つかりませんでした（同意画面・別レイアウト・sorry 亜種の疑い）",
+    "protocol_error": "ブラウザとの CDP 通信が切れました（遅い IP でページ遷移中にコマンドを送った等）",
 }
 
 # 新しい exit IP を引き直せば通る見込みがあるもの。
-RETRYABLE_ERRORS = ("search_box_not_found",)
+RETRYABLE_ERRORS = ("search_box_not_found", dev.PROTOCOL_ERROR)
 
 
 def force_utf8_stdout() -> None:

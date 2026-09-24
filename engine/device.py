@@ -27,6 +27,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 import nodriver as uc
 from nodriver import cdp
+from nodriver.core.connection import ProtocolException
 
 ACCEPT_LANGUAGE = "ja-JP,ja;q=0.9"
 TIMEZONE_ID = "Asia/Tokyo"
@@ -57,6 +58,23 @@ class SearchBoxNotFound(SearchError):
     def __init__(self, message: str, diagnostics: Optional[dict[str, str]] = None):
         super().__init__(message)
         self.diagnostics = diagnostics or {}
+
+
+# CDP 通信が切れた（ページ遷移中にコマンドを送った等）ときの outcome.error。
+# セッションを変えれば通る見込みがあるので、runner 側でリトライ対象にしている。
+PROTOCOL_ERROR = "protocol_error"
+
+
+def is_protocol_error(caught: BaseException) -> bool:
+    """nodriver の ProtocolException（"Not attached to an active page" など）か。"""
+    return isinstance(caught, ProtocolException)
+
+
+def classify_error(caught: BaseException) -> str:
+    """outcome.error に入れる文字列。分類できるものは短いコードにする。"""
+    if is_protocol_error(caught):
+        return PROTOCOL_ERROR
+    return f"{type(caught).__name__}: {caught}"
 
 
 # --------------------------------------------------------------------------
@@ -971,6 +989,71 @@ async def _tap_element(tab, element) -> bool:
     return True
 
 
+# ページ遷移の完了（readyState が interactive / complete）を待つ最大秒数。
+READY_STATE_TIMEOUT_SECONDS = 15.0
+READY_STATE_POLL_SECONDS = 0.5
+# tab.reload() が ProtocolException で失敗したときの再試行回数と待ち。
+RELOAD_ATTEMPTS = 3
+RELOAD_RETRY_WAIT_SECONDS = (1.0, 1.5, 2.0)
+
+
+async def wait_for_ready(
+    tab, *, label: str, timeout: float = READY_STATE_TIMEOUT_SECONDS
+) -> str:
+    """document.readyState が interactive / complete になるまで待つ。
+
+    遅い IP だとトップページへの遷移が終わる前に次のコマンド（reload）を
+    送ってしまい "Not attached to an active page" になるので、その前に挟む。
+    evaluate 自体が失敗しても例外にはせず、短く待って続ける。
+    最後に段階マーカーで readyState と待った秒数を出す。
+    """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    deadline = started + timeout
+    state = "unknown"
+    while True:
+        try:
+            value = await tab.evaluate("document.readyState", return_by_value=True)
+            state = value if isinstance(value, str) else "unknown"
+        except Exception as caught:  # noqa: BLE001 - 遷移中は失敗して当然
+            state = f"unknown({type(caught).__name__})"
+        if state in ("interactive", "complete") or loop.time() >= deadline:
+            break
+        await asyncio.sleep(READY_STATE_POLL_SECONDS)
+    elapsed = loop.time() - started
+    stage(label, f"readyState={state}（{elapsed:.1f} 秒）")
+    return state
+
+
+async def reload_with_retry(tab, url: str) -> None:
+    """tab.reload() を防御的に行う。
+
+    ProtocolException（-32000 系）が出たら 1〜2 秒待って最大 RELOAD_ATTEMPTS 回
+    やり直し、それでもだめなら同じ URL への tab.get() で代替する。
+    """
+    last: Optional[BaseException] = None
+    for attempt in range(1, RELOAD_ATTEMPTS + 1):
+        try:
+            await tab.reload()
+            if attempt > 1:
+                print(f"    リロード成功（{attempt}/{RELOAD_ATTEMPTS} 回目）")
+            return
+        except ProtocolException as caught:
+            last = caught
+            wait = RELOAD_RETRY_WAIT_SECONDS[min(attempt, len(RELOAD_RETRY_WAIT_SECONDS)) - 1]
+            print(
+                f"    ! リロード失敗（{attempt}/{RELOAD_ATTEMPTS}）: "
+                f"{type(caught).__name__}: {caught} → {wait:.1f} 秒待って再試行"
+            )
+            await asyncio.sleep(wait)
+
+    print(f"    ! リロードが {RELOAD_ATTEMPTS} 回失敗したため、同じ URL へ再ナビゲーションします: {url}")
+    try:
+        await tab.get(url)
+    except Exception as caught:  # noqa: BLE001 - ここで落ちたら呼び出し側の except に任せる
+        raise caught from last
+
+
 # 検索窓のセレクタを待つ秒数（初回と、リロード後の再試行でそれぞれこの秒数）。
 SEARCH_BOX_TIMEOUT_SECONDS = 20.0
 # リロード直後に描画を落ち着かせる秒数。
@@ -990,7 +1073,8 @@ async def _reload_and_wait_for_search_box(tab, selectors: Sequence[str]):
         f"（{describe_page_state(before)}）。同じセッションでリロードします",
     )
     try:
-        await tab.reload()
+        url = await current_url(tab)
+        await reload_with_retry(tab, url or "about:blank")
         await tab.sleep(RELOAD_SETTLE_SECONDS)
     except Exception as caught:  # noqa: BLE001 - リロード自体の失敗も待ち直しに回す
         print(f"    ! リロードに失敗（そのまま待ち直します）: {type(caught).__name__}: {caught}")
