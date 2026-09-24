@@ -212,6 +212,45 @@ def environment_lines() -> list[str]:
     ]
 
 
+async def _chrome_self_check(headless: bool) -> str:
+    """nodriver で Chrome を起動 → CDP でバージョン取得 → 終了。要約文を返す。"""
+    browser = await start_browser(proxy=None, headless=headless)
+    try:
+        protocol, product, _revision, _user_agent, js_version = (
+            await browser.connection.send(cdp.browser.get_version())
+        )
+        return f"{product}, CDP {protocol}, V8 {js_version}"
+    finally:
+        try:
+            browser.stop()
+        except Exception as caught:  # noqa: BLE001
+            print(f"    ! セルフチェック後の Chrome 停止に失敗（無視）: {type(caught).__name__}: {caught}")
+
+
+def chrome_self_check(*, headless: bool) -> bool:
+    """起動時に1回、Chrome と nodriver が本当に接続できるかを確かめる。
+
+    Chrome のメジャーバージョンが上がると nodriver が
+    「Failed to connect to browser」で接続できなくなることがある
+    （nodriver 0.47.0 と Chrome 154 で実際に起きた）。実行を待たずに
+    起動直後のログで気づけるようにする。NG でも動作は止めない。
+    """
+    print("Chrome 接続セルフチェックを実行します（起動 → バージョン取得 → 終了）")
+    try:
+        summary = asyncio.run(_chrome_self_check(headless))
+    except Exception as caught:  # noqa: BLE001 - NG でも常駐は続ける
+        print(f"Chrome 接続セルフチェック: NG（{type(caught).__name__}: {caught}）")
+        log_exception(caught, context="Chrome 接続セルフチェック")
+        print(
+            "  ! Chrome と nodriver の組み合わせを疑ってください"
+            "（engine/Dockerfile の CHROME_VERSION と requirements.txt の nodriver）。"
+            "このまま続行しますが、実行は error になる可能性が高いです。"
+        )
+        return False
+    print(f"Chrome 接続セルフチェック: OK（{summary}）")
+    return True
+
+
 # --------------------------------------------------------------------------
 # デバイス記述子
 # --------------------------------------------------------------------------

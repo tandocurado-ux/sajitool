@@ -386,9 +386,16 @@ PC を閉じても時刻どおりに動くよう、`engine/` を Docker 化し�
 
 ### イメージの中身
 
-- `python:3.12-slim` + **google-chrome-stable**（Chromium ではレシピが通らない）
+- `python:3.12-slim-bookworm` + **Chrome for Testing をバージョン固定で取得**
+  （`CHROME_VERSION`、現在 153.0.8010.52。`/opt/chrome/chrome` に展開）
+  - 以前は `google-chrome-stable`（常に最新）だったが、再ビルドで Chrome が 154 に
+    上がった途端 nodriver 0.47.0 が「Failed to connect to browser」になり全件 error
+    になった（2026-09-24 確認）。**上げる時は必ず `run_once.py --dry-run` で接続確認**
+  - Chromium ではレシピが通らないので Chrome 本体（Chrome for Testing）を使う
 - `fonts-noto-cjk`（日本語表示）、`xvfb`（仮想ディスプレイ）
 - `TZ=Asia/Tokyo`
+- 起動時に「Chrome 接続セルフチェック」を1回行い、OK/NG をログに出す
+  （NG でも常駐は続く。ログで気づいたら Chrome と nodriver の組み合わせを疑う）
 
 ヘッドレス Chrome は検知されやすく、実証済みのレシピは実ブラウザ前提で通してあるため、
 **既定では Xvfb 上で通常の Chrome を起動する**（`docker-entrypoint.sh`）。

@@ -804,6 +804,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     load_dotenv(ENGINE_DIR / ".env")
     args = parse_args(argv)
     runner.print_environment()
+    # Chrome と nodriver が接続できるかを起動時に1回だけ確かめる。
+    # NG でもここでは止めない（ログで気づける状態にするのが目的）。
+    dev.chrome_self_check(headless=args.headless or headless_from_env())
 
     try:
         sb = create_supabase()
