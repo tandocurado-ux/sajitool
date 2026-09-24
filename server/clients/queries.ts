@@ -1,7 +1,15 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { Client, RunStatus } from "@/lib/types";
-import { hoursAgo, jstDateKey } from "@/lib/runs";
+import {
+  buildDailyProgress,
+  countDueSlots,
+  emptyRunCounts,
+  hoursAgo,
+  jstDateKey,
+  summaryFromCounts,
+  type DailyProgress,
+} from "@/lib/runs";
 import { listKeywordsByClientIds } from "@/server/keywords/queries";
 import { listRegionsByClientIds } from "@/server/regions/queries";
 import { listSchedulesByKeywordIds } from "@/server/schedules/queries";
@@ -63,8 +71,14 @@ export type ClientOverviewRow = {
   enabledScheduleCount: number;
   lastRunAt: string | null;
   lastRunStatus: RunStatus | null;
-  todayRuns: number;
-  todayBlocked: number;
+  /** 当日（JST）の実行内訳と、現在時刻までの予定枠に対する消化状況。 */
+  today: DailyProgress;
+};
+
+/** 集計中だけ使う作業用の行。today は最後に率へ直す。 */
+type OverviewDraft = Omit<ClientOverviewRow, "today"> & {
+  todayCounts: Record<RunStatus, number>;
+  todayPlanned: number;
 };
 
 /**
@@ -101,7 +115,10 @@ export async function getClientsOverview(): Promise<ClientOverviewRow[]> {
     if (clientId) clientIdBySchedule.set(schedule.id, clientId);
   }
 
-  const rows = new Map<string, ClientOverviewRow>(
+  const now = new Date();
+  const today = jstDateKey(now);
+
+  const rows = new Map<string, OverviewDraft>(
     clients.map((client) => [
       client.id,
       {
@@ -114,8 +131,8 @@ export async function getClientsOverview(): Promise<ClientOverviewRow[]> {
         enabledScheduleCount: 0,
         lastRunAt: null,
         lastRunStatus: null,
-        todayRuns: 0,
-        todayBlocked: 0,
+        todayCounts: emptyRunCounts(),
+        todayPlanned: 0,
       },
     ]),
   );
@@ -139,10 +156,11 @@ export async function getClientsOverview(): Promise<ClientOverviewRow[]> {
     if (!row) continue;
     row.scheduleCount += 1;
     if (schedule.enabled) row.enabledScheduleCount += 1;
+    // 「予定」は現在時刻までに来ているはずの枠数（有効なスケジュールのみ）。
+    row.todayPlanned += countDueSlots(schedule, now);
   }
 
   // runs は run_at の降順で返るので、最初に見たものがその顧客の直近実行。
-  const today = jstDateKey(new Date());
   for (const run of runs) {
     const clientId = clientIdBySchedule.get(run.schedule_id);
     const row = clientId ? rows.get(clientId) : undefined;
@@ -152,11 +170,16 @@ export async function getClientsOverview(): Promise<ClientOverviewRow[]> {
       row.lastRunAt = run.run_at;
       row.lastRunStatus = run.status;
     }
-    if (jstDateKey(run.run_at) === today) {
-      row.todayRuns += 1;
-      if (run.status === "blocked") row.todayBlocked += 1;
+    if (jstDateKey(run.run_at) === today && run.status in row.todayCounts) {
+      row.todayCounts[run.status] += 1;
     }
   }
 
-  return clients.map((client) => rows.get(client.id)!);
+  return clients.map((client) => {
+    const { todayCounts, todayPlanned, ...rest } = rows.get(client.id)!;
+    return {
+      ...rest,
+      today: buildDailyProgress(summaryFromCounts(todayCounts), todayPlanned),
+    };
+  });
 }

@@ -51,8 +51,15 @@ export type RunStatus = "ok" | "blocked" | "error";
 
 export const RUN_STATUS_LABELS: Record<RunStatus, string> = {
   ok: "成功",
-  blocked: "ブロック",
-  error: "失敗",
+  blocked: "検知",
+  error: "エラー",
+};
+
+/** バッジの title などに出す補足。blocked と error を混同しないための説明。 */
+export const RUN_STATUS_DESCRIPTIONS: Record<RunStatus, string> = {
+  ok: "検索結果を取得できた",
+  blocked: "ボット検知でブロックされた（プロキシや間隔の見直し対象）",
+  error: "取得中にエラーが起きた（タイムアウトや例外）",
 };
 
 export const RUN_STATUSES: RunStatus[] = ["ok", "blocked", "error"];

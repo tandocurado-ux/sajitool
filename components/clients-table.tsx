@@ -7,6 +7,7 @@ import type { ClientOverviewRow } from "@/server/clients/queries";
 import { formatRunAt } from "@/lib/runs";
 import { ClientNameEditor } from "./client-name-editor";
 import { DeleteButton } from "./delete-button";
+import { DailyProgressSummary } from "./daily-progress";
 import { RunStatusBadge } from "./run-status-badge";
 import { inputClass } from "./ui";
 
@@ -60,7 +61,10 @@ export function ClientsTable({ rows, runWindowDays }: Props) {
                   直近実行
                   <span className="ml-1 font-normal">（{runWindowDays}日以内）</span>
                 </th>
-                <th className="py-2 pr-4 font-medium">本日の実行</th>
+                <th className="py-2 pr-4 font-medium">
+                  本日の実行
+                  <span className="ml-1 font-normal">（JST）</span>
+                </th>
                 <th className="py-2 font-medium">アクション</th>
               </tr>
             </thead>
@@ -108,18 +112,7 @@ export function ClientsTable({ rows, runWindowDays }: Props) {
                   </td>
 
                   <td className="whitespace-nowrap py-3 pr-4 text-neutral-900">
-                    {row.todayRuns === 0 ? (
-                      <span className="text-neutral-400">-</span>
-                    ) : (
-                      <>
-                        {row.todayRuns} 件
-                        {row.todayBlocked > 0 ? (
-                          <span className="ml-1 text-xs font-medium text-red-600">
-                            （ブロック {row.todayBlocked}）
-                          </span>
-                        ) : null}
-                      </>
-                    )}
+                    <DailyProgressSummary progress={row.today} />
                   </td>
 
                   <td className="py-3">

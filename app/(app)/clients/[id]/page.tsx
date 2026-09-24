@@ -14,6 +14,7 @@ import { ScheduleToggle } from "@/components/schedule-toggle";
 import { ClientNameEditor } from "@/components/client-name-editor";
 import { DeleteButton } from "@/components/delete-button";
 import { RunStatusBadge } from "@/components/run-status-badge";
+import { DailyProgressSummary } from "@/components/daily-progress";
 import { cardClass, primaryButtonClass } from "@/components/ui";
 import {
   groupRunsByScheduleId,
@@ -22,16 +23,20 @@ import {
 } from "@/server/runs/queries";
 import { formatTime } from "@/lib/parse";
 import {
+  buildDailyProgress,
+  countDueSlots,
   formatRate,
   formatRunAt,
   formatRunAtShort,
   hoursAgo,
   isSince,
+  jstDateKey,
   summarizeRuns,
 } from "@/lib/runs";
 import {
   DEVICE_LABELS,
   PLATFORM_LABELS,
+  RUN_STATUS_LABELS,
   type Device,
   type Platform,
 } from "@/lib/types";
@@ -98,6 +103,15 @@ export default async function ClientDetailPage(
     listRunsByScheduleIds(scheduleIds, { limit: 300 }),
   ]);
   const runsBySchedule = groupRunsByScheduleId(mergeRuns(weekRuns, recentRuns));
+
+  // 本日（JST）の成功率と、現在時刻までの予定枠に対する消化状況。
+  // 7日分の runs に当日分も含まれているので、追加のクエリは要らない。
+  const now = new Date();
+  const today = jstDateKey(now);
+  const todayProgress = buildDailyProgress(
+    summarizeRuns(weekRuns.filter((run) => jstDateKey(run.run_at) === today)),
+    schedules.reduce((sum, schedule) => sum + countDueSlots(schedule, now), 0),
+  );
 
   const keywordById = new Map(keywords.map((keyword) => [keyword.id, keyword]));
   const regionById = new Map(regions.map((region) => [region.id, region]));
@@ -178,7 +192,7 @@ export default async function ClientDetailPage(
 
       <section className={cardClass}>
         <h2 className="mb-3 text-sm font-semibold text-neutral-900">登録内容</h2>
-        <dl className="grid gap-3 sm:grid-cols-3">
+        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded border border-neutral-200 px-3 py-2">
             <dt className="text-xs text-neutral-500">キーワード</dt>
             <dd className="text-lg font-semibold text-neutral-900">
@@ -210,6 +224,12 @@ export default async function ClientDetailPage(
               <span className="ml-2 text-xs font-normal text-neutral-500">
                 有効 {enabledSchedules} / 無効 {schedules.length - enabledSchedules}
               </span>
+            </dd>
+          </div>
+          <div className="rounded border border-neutral-200 px-3 py-2">
+            <dt className="text-xs text-neutral-500">本日の実行（JST）</dt>
+            <dd className="mt-1 text-sm">
+              <DailyProgressSummary progress={todayProgress} />
             </dd>
           </div>
         </dl>
@@ -481,8 +501,8 @@ export default async function ClientDetailPage(
                           <span className="text-neutral-500">
                             {" "}
                             （{weekSummary.counts.ok}/{weekSummary.total} 件・
-                            ブロック {weekSummary.counts.blocked}・失敗{" "}
-                            {weekSummary.counts.error}）
+                            {RUN_STATUS_LABELS.blocked} {weekSummary.counts.blocked}・
+                            {RUN_STATUS_LABELS.error} {weekSummary.counts.error}）
                           </span>
                         </>
                       )}

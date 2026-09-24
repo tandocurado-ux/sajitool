@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getDashboardOverview } from "@/server/runs/queries";
 import { getClientsOverview } from "@/server/clients/queries";
 import { RunStatusBadge } from "@/components/run-status-badge";
+import { SuccessRate } from "@/components/daily-progress";
 import { cardClass } from "@/components/ui";
 import { formatRate, formatRunAt, type RunSummary } from "@/lib/runs";
 import {
@@ -9,30 +10,46 @@ import {
   PLATFORM_LABELS,
   RUN_STATUS_LABELS,
   RUN_STATUSES,
+  type RunStatus,
 } from "@/lib/types";
 
 export const metadata = {
   title: "ダッシュボード | サジェツール",
 };
 
+/** 内訳タイルの見出し色。blocked と error を色でも見分けられるようにする。 */
+const STATUS_LABEL_CLASSES: Record<RunStatus, string> = {
+  ok: "text-green-700",
+  blocked: "text-red-600",
+  error: "text-amber-700",
+};
+
 function SummaryCard({ title, summary }: { title: string; summary: RunSummary }) {
   return (
     <section className={cardClass}>
       <h2 className="text-sm font-semibold text-neutral-900">{title}</h2>
-      <p className="mt-2 text-3xl font-semibold text-neutral-900">
-        {summary.total}
-        <span className="ml-1 text-sm font-normal text-neutral-500">件</span>
-      </p>
 
       {summary.total === 0 ? (
-        <p className="mt-3 text-sm text-neutral-500">この期間の実行はありません。</p>
+        <>
+          <p className="mt-2 text-4xl font-semibold text-neutral-300">-</p>
+          <p className="mt-3 text-sm text-neutral-500">この期間の実行はありません。</p>
+        </>
       ) : (
         <>
+          <p className="mt-2 flex items-baseline gap-2">
+            <SuccessRate rate={summary.successRate} className="text-4xl" />
+            <span className="text-sm text-neutral-500">成功率</span>
+          </p>
+          <p className="mt-1 text-sm text-neutral-700">
+            成功 {summary.counts.ok} / 実行 {summary.total} 件
+          </p>
+
           <dl className="mt-3 grid grid-cols-3 gap-2">
             {RUN_STATUSES.map((status) => (
               <div key={status} className="rounded border border-neutral-200 px-3 py-2">
-                <dt className="text-xs text-neutral-500">
+                <dt className={`text-xs font-medium ${STATUS_LABEL_CLASSES[status]}`}>
                   {RUN_STATUS_LABELS[status]}
+                  <span className="ml-1 font-normal text-neutral-400">{status}</span>
                 </dt>
                 <dd className="text-lg font-semibold text-neutral-900">
                   {summary.counts[status]}
@@ -41,7 +58,7 @@ function SummaryCard({ title, summary }: { title: string; summary: RunSummary })
             ))}
           </dl>
           <p className="mt-3 text-xs text-neutral-500">
-            成功率 {formatRate(summary.successRate)} ／ ブロック率{" "}
+            ブロック率{" "}
             <span
               className={
                 summary.blockedRate > 0 ? "font-medium text-red-600" : undefined
