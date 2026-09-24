@@ -50,9 +50,11 @@ export function mergeRuns(...groups: Run[][]): Run[] {
   for (const group of groups) {
     for (const run of group) byId.set(run.id, run);
   }
-  return [...byId.values()].sort(
-    (a, b) => parseRunAt(b.run_at).getTime() - parseRunAt(a.run_at).getTime(),
-  );
+  const time = (value: string | null | undefined) => {
+    const parsed = parseRunAt(value).getTime();
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+  return [...byId.values()].sort((a, b) => time(b.run_at) - time(a.run_at));
 }
 
 export function groupRunsByScheduleId(runs: Run[]): Map<string, Run[]> {

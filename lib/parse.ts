@@ -34,7 +34,9 @@ export function parseTimes(raw: string): ParseResult<string[]> {
 }
 
 /** Postgres の time 型は "09:00:00" で返るので HH:MM に詰める。 */
-export function formatTime(value: string): string {
+export function formatTime(value: string | null | undefined): string {
+  // 配列に null が混ざっていても落とさない（表示上は空として扱う）。
+  if (typeof value !== "string") return "";
   return value.slice(0, 5);
 }
 

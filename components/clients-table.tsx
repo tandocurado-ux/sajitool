@@ -23,7 +23,9 @@ export function ClientsTable({ rows, runWindowDays }: Props) {
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return rows;
-    return rows.filter((row) => row.client.name.toLowerCase().includes(needle));
+    return rows.filter((row) =>
+      (row.client.name ?? "").toLowerCase().includes(needle),
+    );
   }, [rows, query]);
 
   return (

@@ -1,6 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { Client, RunStatus } from "@/lib/types";
+import {
+  RUN_STATUSES,
+  type Client,
+  type Keyword,
+  type Region,
+  type Run,
+  type RunStatus,
+  type Schedule,
+} from "@/lib/types";
 import {
   buildDailyProgress,
   countDueSlots,
@@ -106,6 +114,34 @@ export async function getClientsOverview(): Promise<ClientOverviewRow[]> {
     { since: hoursAgo(24 * CLIENT_RUN_WINDOW_DAYS) },
   );
 
+  return aggregateClientsOverview(
+    { clients, keywords, regions, schedules, runs },
+    new Date(),
+  );
+}
+
+export type ClientsOverviewSource = {
+  clients: Client[];
+  keywords: Keyword[];
+  regions: Region[];
+  schedules: Schedule[];
+  /** run_at の降順で並んでいること（最初に見たものを直近実行とみなす）。 */
+  runs: Run[];
+};
+
+/**
+ * 取得済みの行を顧客ごとに集計する純粋関数（DB には触らない）。
+ *
+ * 実行履歴が0件の顧客、created_at や times が null の行、status が想定外の
+ * run が混ざっていても例外にしない。ここで落ちると顧客一覧ページごと
+ * 表示できなくなる（本番で「A server error occurred」になった）。
+ */
+export function aggregateClientsOverview(
+  source: ClientsOverviewSource,
+  now: Date,
+): ClientOverviewRow[] {
+  const { clients, keywords, regions, schedules, runs } = source;
+
   const clientIdByKeyword = new Map(
     keywords.map((keyword) => [keyword.id, keyword.client_id]),
   );
@@ -115,7 +151,6 @@ export async function getClientsOverview(): Promise<ClientOverviewRow[]> {
     if (clientId) clientIdBySchedule.set(schedule.id, clientId);
   }
 
-  const now = new Date();
   const today = jstDateKey(now);
 
   const rows = new Map<string, OverviewDraft>(
@@ -166,12 +201,13 @@ export async function getClientsOverview(): Promise<ClientOverviewRow[]> {
     const row = clientId ? rows.get(clientId) : undefined;
     if (!row) continue;
 
-    if (row.lastRunAt === null) {
+    const status = RUN_STATUSES.includes(run.status) ? run.status : null;
+    if (row.lastRunAt === null && typeof run.run_at === "string") {
       row.lastRunAt = run.run_at;
-      row.lastRunStatus = run.status;
+      row.lastRunStatus = status;
     }
-    if (jstDateKey(run.run_at) === today && run.status in row.todayCounts) {
-      row.todayCounts[run.status] += 1;
+    if (status && today !== "" && jstDateKey(run.run_at) === today) {
+      row.todayCounts[status] += 1;
     }
   }
 

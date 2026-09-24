@@ -108,15 +108,20 @@ export function countDueSlots(
 ): number {
   if (!schedule.enabled) return 0;
   const nowKey = jstTimeKey(now);
+  // created_at が null の行や、times に null が混ざった行でも落とさない
+  // （本番で顧客一覧ごと落ちた原因）。読めない値は「今日作られたのではない」
+  // 「枠ではない」として扱う。
   const createdAt = parseRunAt(schedule.created_at);
   const createdToday =
     !Number.isNaN(createdAt.getTime()) &&
     jstDateKey(createdAt) === jstDateKey(now);
   const floorKey = createdToday ? jstTimeKey(createdAt) : "";
 
+  const times = Array.isArray(schedule.times) ? schedule.times : [];
   let due = 0;
-  for (const raw of schedule.times ?? []) {
+  for (const raw of times) {
     const time = formatTime(raw);
+    if (time === "") continue;
     if (time <= nowKey && time >= floorKey) due += 1;
   }
   return due;
@@ -140,7 +145,10 @@ const HAS_TIMEZONE = /(?:Z|[+-]\d{2}:?\d{2})$/;
  * 付かず、そのまま new Date() に渡すとローカル時刻として解釈されて9時間ずれる。
  * 計測エンジンは UTC で書き込むので、オフセットが無い場合は UTC とみなす。
  */
-export function parseRunAt(value: string): Date {
+export function parseRunAt(value: string | null | undefined): Date {
+  // 列が null だったり、想定外の型で返ってきても例外にはしない
+  // （Invalid Date を返し、呼び出し側の isNaN 判定に任せる）。
+  if (typeof value !== "string" || value.trim() === "") return new Date(NaN);
   const normalized = HAS_TIMEZONE.test(value)
     ? value
     : `${value.replace(" ", "T")}Z`;
@@ -148,9 +156,9 @@ export function parseRunAt(value: string): Date {
 }
 
 /** run_at は UTC で入るので JST に直して表示する。 */
-export function formatRunAt(value: string): string {
+export function formatRunAt(value: string | null | undefined): string {
   const parsed = parseRunAt(value);
-  if (Number.isNaN(parsed.getTime())) return value;
+  if (Number.isNaN(parsed.getTime())) return value ?? "-";
   return dateTimeFormatter.format(parsed);
 }
 
@@ -172,9 +180,9 @@ const shortFormatter = new Intl.DateTimeFormat("ja-JP", {
 });
 
 /** マトリクスのセルなど、幅が取れない場所向けの短い表記。 */
-export function formatRunAtShort(value: string): string {
+export function formatRunAtShort(value: string | null | undefined): string {
   const parsed = parseRunAt(value);
-  if (Number.isNaN(parsed.getTime())) return value;
+  if (Number.isNaN(parsed.getTime())) return value ?? "-";
   return shortFormatter.format(parsed);
 }
 
@@ -193,15 +201,15 @@ const timeKeyFormatter = new Intl.DateTimeFormat("en-GB", {
 });
 
 /** JST での「HH:MM」。schedules.times（JST）との比較に使う。 */
-export function jstTimeKey(value: string | Date): string {
-  const parsed = typeof value === "string" ? parseRunAt(value) : value;
+export function jstTimeKey(value: string | Date | null | undefined): string {
+  const parsed = value instanceof Date ? value : parseRunAt(value);
   if (Number.isNaN(parsed.getTime())) return "";
   return timeKeyFormatter.format(parsed);
 }
 
-/** JST での「YYYY-MM-DD」。当日判定に使う。 */
-export function jstDateKey(value: string | Date): string {
-  const parsed = typeof value === "string" ? parseRunAt(value) : value;
+/** JST での「YYYY-MM-DD」。当日判定に使う。null や不正値は "" になる。 */
+export function jstDateKey(value: string | Date | null | undefined): string {
+  const parsed = value instanceof Date ? value : parseRunAt(value);
   if (Number.isNaN(parsed.getTime())) return "";
   return dateKeyFormatter.format(parsed);
 }
