@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assignSpreadTimes } from "@/lib/parse";
 import type { BulkSetupInput, BulkSetupSummary } from "./schema";
+import { describeQueryError, fetchInChunks } from "@/server/supabase-query";
 
 const SEP = "\u0000";
 
@@ -99,15 +100,23 @@ export async function applyBulkSetup(
   let regionIds: string[] = [];
   if (input.regionIds.length > 0) {
     // 選ばれた地域が本当にこの顧客のものかを確認する。
-    const owned = await supabase
-      .from("regions")
-      .select("id")
-      .eq("client_id", input.client_id)
-      .in("id", input.regionIds);
-    if (owned.error) {
-      return fail(`地域の確認に失敗しました: ${owned.error.message}`);
+    // id は IN_CHUNK_SIZE 件ずつに分けて投げる（地域が何百件でも URL 長で落ちない）。
+    try {
+      const owned = await fetchInChunks(input.regionIds, async (ids) => {
+        const { data, error } = await supabase
+          .from("regions")
+          .select("id")
+          .eq("client_id", input.client_id)
+          .in("id", ids);
+        if (error) throw new Error(describeQueryError(error));
+        return data ?? [];
+      });
+      regionIds = owned.map((row) => String(row.id));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      console.error(`[supabase] 地域の確認に失敗しました: ${message}`);
+      return fail(`地域の確認に失敗しました: ${message}`);
     }
-    regionIds = (owned.data ?? []).map((row) => String(row.id));
     if (regionIds.length !== input.regionIds.length) {
       return fail("選択された地域の一部が見つかりませんでした。画面を再読み込みしてください。");
     }
@@ -138,19 +147,26 @@ export async function applyBulkSetup(
 
   // --- スケジュール（同じ keyword × region × device は作らない）---
   const keywordIds = [...keywordIdByKey.values()];
-  const existingSchedules = await supabase
-    .from("schedules")
-    .select("keyword_id, region_id, device")
-    .in("keyword_id", keywordIds);
-  if (existingSchedules.error) {
-    return fail(
-      `スケジュールの確認に失敗しました: ${existingSchedules.error.message}`,
-    );
+  // keyword_id は IN_CHUNK_SIZE 件ずつに分けて投げる（キーワードが数千件でも URL 長で落ちない）。
+  let existingSchedules: { keyword_id: string; region_id: string; device: string }[];
+  try {
+    existingSchedules = await fetchInChunks(keywordIds, async (ids) => {
+      const { data, error } = await supabase
+        .from("schedules")
+        .select("keyword_id, region_id, device")
+        .in("keyword_id", ids);
+      if (error) throw new Error(describeQueryError(error));
+      return (data ?? []) as { keyword_id: string; region_id: string; device: string }[];
+    });
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    console.error(`[supabase] スケジュールの確認に失敗しました: ${message}`);
+    return fail(`スケジュールの確認に失敗しました: ${message}`);
   }
   const scheduleKey = (keywordId: string, regionId: string, device: string) =>
     `${keywordId}${SEP}${regionId}${SEP}${device}`;
   const existingScheduleKeys = new Set(
-    (existingSchedules.data ?? []).map((row) =>
+    existingSchedules.map((row) =>
       scheduleKey(String(row.keyword_id), String(row.region_id), row.device),
     ),
   );

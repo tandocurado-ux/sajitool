@@ -12,6 +12,7 @@ import { listClients } from "@/server/clients/queries";
 import { listKeywordsByClientIds } from "@/server/keywords/queries";
 import { listRegionsByClientIds } from "@/server/regions/queries";
 import { listSchedulesByKeywordIds } from "@/server/schedules/queries";
+import { compareDesc, fetchInChunks, queryFailure } from "@/server/supabase-query";
 
 type ListOptions = {
   /** この日時以降の実行だけを取る。 */
@@ -22,6 +23,14 @@ type ListOptions = {
 /**
  * runs には client_id が無いため、顧客配下のスケジュール id で絞り込む。
  * RLS に加えて、呼び出し側が自分の顧客から辿った id だけを渡している。
+ *
+ * schedule_id は IN_CHUNK_SIZE 件ずつに分けて投げる。スケジュールが
+ * 数千件・runs が数万件になっても URL 長は一定で、400 にはならない
+ * （本番で 614 件を1回の `.in()` に載せて Bad Request になった対処）。
+ *
+ * 結果は1回で引いたときと同じになるよう run_at 降順に並べ直す。
+ * limit はチャンクごとに掛けてから全体で再度切る：各チャンクの上位 N 件の
+ * 和集合には全体の上位 N 件が必ず含まれるので、結果は同じになる。
  */
 export async function listRunsByScheduleIds(
   scheduleIds: string[],
@@ -30,18 +39,23 @@ export async function listRunsByScheduleIds(
   if (scheduleIds.length === 0) return [];
 
   const supabase = await createSupabaseServerClient();
-  let query = supabase
-    .from("runs")
-    .select("*")
-    .in("schedule_id", scheduleIds)
-    .order("run_at", { ascending: false });
+  const rows = await fetchInChunks(scheduleIds, async (ids) => {
+    let query = supabase
+      .from("runs")
+      .select("*")
+      .in("schedule_id", ids)
+      .order("run_at", { ascending: false });
 
-  if (since) query = query.gte("run_at", since.toISOString());
-  if (limit) query = query.limit(limit);
+    if (since) query = query.gte("run_at", since.toISOString());
+    if (limit) query = query.limit(limit);
 
-  const { data, error } = await query;
-  if (error) throw new Error(`実行履歴の取得に失敗しました: ${error.message}`);
-  return data ?? [];
+    const { data, error } = await query;
+    if (error) throw queryFailure("実行履歴の取得に失敗しました", error);
+    return (data ?? []) as Run[];
+  });
+
+  rows.sort((a, b) => compareDesc(a.run_at, b.run_at));
+  return limit ? rows.slice(0, limit) : rows;
 }
 
 /** 期間指定と件数指定の結果をまとめ、id の重複を除いて新しい順に並べる。 */

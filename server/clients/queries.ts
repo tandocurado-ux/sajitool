@@ -22,6 +22,7 @@ import { listKeywordsByClientIds } from "@/server/keywords/queries";
 import { listRegionsByClientIds } from "@/server/regions/queries";
 import { listSchedulesByKeywordIds } from "@/server/schedules/queries";
 import { listRunsByScheduleIds } from "@/server/runs/queries";
+import { queryFailure } from "@/server/supabase-query";
 
 export async function listClients(): Promise<Client[]> {
   const supabase = await createSupabaseServerClient();
@@ -30,7 +31,7 @@ export async function listClients(): Promise<Client[]> {
     .select("*")
     .order("created_at", { ascending: true });
 
-  if (error) throw new Error(`顧客一覧の取得に失敗しました: ${error.message}`);
+  if (error) throw queryFailure("顧客一覧の取得に失敗しました", error);
   return data ?? [];
 }
 
@@ -42,7 +43,7 @@ export async function getClientById(id: string): Promise<Client | null> {
     .eq("id", id)
     .maybeSingle();
 
-  if (error) throw new Error(`顧客の取得に失敗しました: ${error.message}`);
+  if (error) throw queryFailure("顧客の取得に失敗しました", error);
   return data;
 }
 
