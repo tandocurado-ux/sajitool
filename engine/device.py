@@ -404,6 +404,42 @@ class ProxyConfig:
     # ログ用。Google はキーワード単位で固定、Yahoo! は毎回新規。
     session_id: str = ""
     session_mode: str = "random"
+    # ログ用。どの経路（google / yahoo）向けに組み立てた設定か。
+    platform: str = ""
+
+
+SOAX_USERNAME_KEYS = ("country", "region", "network", "rotate", "session")
+
+
+def describe_proxy(proxy: "ProxyConfig") -> str:
+    """SOAX に実際に送る username を、読める形で1行にする。
+
+    パスワードは出さない（パッケージ識別はパスワード側なので username に秘密は
+    無いが、session だけは先頭4文字を残して伏せる）。network が mob / res の
+    どちらか、region が省略されているかを、経路（platform）ごとにログで確認する
+    ためのもの。
+    """
+    tokens = proxy.username.split("-")
+    fields: dict[str, str] = {}
+    index = 0
+    while index + 1 < len(tokens):
+        key = tokens[index]
+        if key in SOAX_USERNAME_KEYS:
+            fields[key] = tokens[index + 1]
+            index += 2
+        else:
+            index += 1
+    session = fields.get("session", "")
+    masked_session = f"{session[:4]}****" if session else "-"
+    masked_username = re.sub(r"(session-)[^-]+", rf"\g<1>{masked_session}", proxy.username)
+    return (
+        f"platform={proxy.platform or '-'} "
+        f"network={fields.get('network') or '-'} "
+        f"region={fields.get('region') or '省略'} "
+        f"rotate={fields.get('rotate') or '-'} "
+        f"country={fields.get('country') or '-'} "
+        f"username={masked_username}"
+    )
 
 
 def soax_region_for(prefecture: Optional[str]) -> Optional[str]:
@@ -578,6 +614,7 @@ def build_proxy_config(
         password=password,
         session_id=session_id,
         session_mode=session_mode,
+        platform=platform or "",
     )
 
 
@@ -694,7 +731,7 @@ async def setup_request_interception(tab, proxy: Optional[ProxyConfig]) -> None:
         "プロキシ設定",
         (
             f"server={proxy.server} 認証=あり（Fetch.AuthRequired で応答） "
-            f"session={proxy.session_id or '-'}（{proxy.session_mode}）"
+            f"session_mode={proxy.session_mode} {describe_proxy(proxy)}"
             if proxy
             else "プロキシなし（直結。画像・メディア・フォントの遮断のみ）"
         ),
