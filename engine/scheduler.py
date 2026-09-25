@@ -274,6 +274,8 @@ class Scheduler:
         self.google_skipped: list[Job] = []
         # Google の連続 blocked 数（リトライを尽くしても blocked だった実行で1カウント）。
         self.google_consecutive_blocked = 0
+        # 計測対象外（Google × pc など）としてログ済みのスケジュール id。
+        self.skipped_targets: set[str] = set()
         self.google_breaker_threshold = google_breaker_threshold()
 
         self.started_at: Optional[datetime] = None
@@ -319,12 +321,29 @@ class Scheduler:
 
     def refresh(self, now: datetime) -> None:
         try:
-            self.targets = list_enabled_schedule_targets(self.sb)
+            loaded = list_enabled_schedule_targets(self.sb)
         except Exception as caught:  # noqa: BLE001 - 読めなくても常駐は続ける
             print(
                 f"[{now:%H:%M}] ! スケジュールの読み込みに失敗しました（前回の内容で続行）: {caught}"
             )
             dev.log_exception(caught, context="スケジュールの読み込み")
+            return
+
+        # Google × pc など計測対象外の組み合わせは、DB に残っていても積まない
+        # （初めて見たものだけログに出す）。Yahoo! は pc / mobile とも対象。
+        kept: list[ScheduleTarget] = []
+        for target in loaded:
+            reason = runner.skip_reason(target)
+            if reason is None:
+                kept.append(target)
+                continue
+            if target.schedule_id not in self.skipped_targets:
+                self.skipped_targets.add(target.schedule_id)
+                print(
+                    f"[{now:%H:%M}] {reason}: {runner.describe_target(target)}"
+                    f"（schedule {target.schedule_id}）"
+                )
+        self.targets = kept
 
     def restore_from_runs(self, now: datetime) -> int:
         """当日すでに実行済みの枠を runs から復元する。

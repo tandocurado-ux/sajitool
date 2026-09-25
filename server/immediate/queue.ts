@@ -12,6 +12,8 @@ import {
   activeImmediateRunFor,
   readImmediateQueue,
 } from "@/lib/immediate";
+import { GOOGLE_DEVICE_NOTE, isAllowedCombination } from "@/lib/device-policy";
+import type { Device, Platform } from "@/lib/types";
 
 export type EnqueueResult =
   | { ok: true; requestId: string; scheduleId: string }
@@ -32,7 +34,7 @@ export async function enqueueImmediateRun(
   // 所有権: schedules → keywords → clients。RLS で他人の行は見えない。
   const schedule = await supabase
     .from("schedules")
-    .select("id, keyword_id")
+    .select("id, keyword_id, device")
     .eq("id", scheduleId)
     .maybeSingle();
   if (schedule.error || !schedule.data) {
@@ -40,7 +42,7 @@ export async function enqueueImmediateRun(
   }
   const keyword = await supabase
     .from("keywords")
-    .select("client_id")
+    .select("client_id, platform")
     .eq("id", String(schedule.data.keyword_id))
     .maybeSingle();
   if (keyword.error || !keyword.data) {
@@ -48,6 +50,10 @@ export async function enqueueImmediateRun(
   }
   if (!(await isClientOwned(supabase, String(keyword.data.client_id)))) {
     return { ok: false, error: "このスケジュールを操作する権限がありません。" };
+  }
+  // Google × pc は実行しない（登録ガードをすり抜けた既存行への保険）。
+  if (!isAllowedCombination(String(keyword.data.platform) as Platform, String(schedule.data.device) as Device)) {
+    return { ok: false, error: `${GOOGLE_DEVICE_NOTE}。このスケジュールは実行できません。` };
   }
 
   const active = activeImmediateRunFor(user, scheduleId);

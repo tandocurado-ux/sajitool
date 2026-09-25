@@ -14,6 +14,7 @@ import {
 } from "@/server/setup/schema";
 import { parseKeywordLines } from "@/lib/parse";
 import { computeSchedulePlan, type SpreadSuggestion } from "@/lib/schedule-plan";
+import { devicesForPlatform, includesGoogle } from "@/lib/device-policy";
 import type { Keyword, Region } from "@/lib/types";
 import { FormError } from "./form-error";
 import { ImmediateRunStatus } from "./immediate-run";
@@ -108,9 +109,11 @@ export function BulkSetupForm({
   const [timing, setTiming] = useState<TimingValue>(() =>
     timingFrom(previousSettings, platformsFor(previousSettings?.platformMode ?? "google")),
   );
-  const [deviceMode, setDeviceMode] = useState<DeviceMode>(
-    previousSettings?.deviceMode ?? "pc",
-  );
+  const [deviceMode, setDeviceMode] = useState<DeviceMode>(() => {
+    const initial = previousSettings?.deviceMode ?? "pc";
+    const initialPlatforms = platformsFor(previousSettings?.platformMode ?? "google");
+    return includesGoogle(initialPlatforms) && initial === "pc" ? "mobile" : initial;
+  });
 
   function updateTiming(patch: Partial<TimingValue>) {
     setTiming((current) => ({ ...current, ...patch }));
@@ -121,6 +124,12 @@ export function BulkSetupForm({
     setPlatformMode(previousSettings.platformMode);
     setDeviceMode(previousSettings.deviceMode);
     setTiming(timingFrom(previousSettings));
+  }
+
+  // Google を含む登録で pc 単独は選べない（選んだ状態で Google に切り替えたらモバイルへ）。
+  function changePlatformMode(next: PlatformMode) {
+    setPlatformMode(next);
+    if (includesGoogle(platformsFor(next)) && deviceMode === "pc") setDeviceMode("mobile");
   }
 
   const keywordIdByKey = useMemo(() => {
@@ -154,9 +163,11 @@ export function BulkSetupForm({
     for (const keyword of keywords) {
       for (const platform of platforms) {
         const keywordId = keywordIdByKey.get(`${keyword}${SEP}${platform}`);
+        // Google は mobile のみ作られる（pc は数えない）。
+        const platformDevices = devicesForPlatform(platform, devices);
         let created = 0;
         for (const regionId of selectedRegionIds) {
-          for (const device of devices) {
+          for (const device of platformDevices) {
             const known =
               keywordId !== undefined &&
               scheduleKeySet.has(`${keywordId}|${regionId}|${device}`);
@@ -165,7 +176,7 @@ export function BulkSetupForm({
           }
         }
         // 新規地域はまだ存在しないので必ず新規作成になる。
-        created += filledNewRegions.length * devices.length;
+        created += filledNewRegions.length * platformDevices.length;
         create += created;
         byPlatform[platform] = (byPlatform[platform] ?? 0) + created;
       }
@@ -363,7 +374,7 @@ export function BulkSetupForm({
         <div className="mt-4">
           <PlatformModeField
             value={platformMode}
-            onChange={setPlatformMode}
+            onChange={changePlatformMode}
             hint="「両方」を選ぶと、1キーワードにつき Google と Yahoo! の2件を登録します。登録済みのキーワードはスキップされます。"
           />
         </div>
@@ -456,7 +467,7 @@ export function BulkSetupForm({
         />
 
         <div className="mt-4">
-          <DeviceModeField value={deviceMode} onChange={setDeviceMode} />
+          <DeviceModeField value={deviceMode} onChange={setDeviceMode} platforms={platforms} />
         </div>
       </section>
 

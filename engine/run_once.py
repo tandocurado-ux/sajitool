@@ -140,6 +140,10 @@ def run_scheduled(args: argparse.Namespace) -> int:
     range_warning = runner.japan_range_warning(target)
     if range_warning:
         print(f"  ! {range_warning}")
+    reason = runner.skip_reason(target)
+    if reason is not None:
+        print(f"  ! {reason}。実行せず終了します（runs にも記録しません）。")
+        return 1
 
     run_at = runner.now_jst()
     outcome = runner.run_search_for_target(

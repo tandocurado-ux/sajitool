@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assignSpreadTimes } from "@/lib/parse";
+import { devicesForPlatform } from "@/lib/device-policy";
 import type { BulkSetupInput, BulkSetupSummary } from "./schema";
 import { describeQueryError, fetchInChunks } from "@/server/supabase-query";
 
@@ -189,8 +190,10 @@ export async function applyBulkSetup(
     for (const platform of input.platforms) {
       const keywordId = keywordIdByKey.get(keywordKey(keyword, platform));
       if (!keywordId) continue;
+      // Google は mobile のみ（pc は作らない）。Yahoo! は選んだデバイス全部。
+      const devices = devicesForPlatform(platform, input.devices);
       for (const regionId of regionIds) {
-        for (const device of input.devices) {
+        for (const device of devices) {
           if (existingScheduleKeys.has(scheduleKey(keywordId, regionId, device))) {
             summary.schedulesSkipped += 1;
             continue;

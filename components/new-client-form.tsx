@@ -11,6 +11,7 @@ import {
   type PlatformMode,
 } from "@/server/setup/schema";
 import { computeSchedulePlan, type SpreadSuggestion } from "@/lib/schedule-plan";
+import { devicesForPlatform, includesGoogle } from "@/lib/device-policy";
 import { FormError } from "./form-error";
 import { isRegionDraftFilled, type RegionDraft } from "./region-picker";
 import { DeviceModeField } from "./setup/device-mode-field";
@@ -41,15 +42,27 @@ export function NewClientForm() {
   const [timing, setTiming] = useState<TimingValue>(() =>
     defaultTimingFor(platformsFor("google")),
   );
-  const [deviceMode, setDeviceMode] = useState<DeviceMode>("pc");
+  // 既定は Google なので、デバイスの既定は mobile。
+  const [deviceMode, setDeviceMode] = useState<DeviceMode>("mobile");
 
   const platforms = platformsFor(platformMode);
   const devices = devicesFor(deviceMode);
   const filledRegions = regionDrafts.filter(isRegionDraftFilled);
 
+  // Google を含む登録で pc 単独は選べない（選んだ状態で Google に切り替えたらモバイルへ）。
+  function changePlatformMode(next: PlatformMode) {
+    setPlatformMode(next);
+    if (includesGoogle(platformsFor(next)) && deviceMode === "pc") setDeviceMode("mobile");
+  }
+
   // 新規顧客なので既存との重複は無い。組み合わせがそのまま作成件数になる。
-  const toCreate =
-    keywords.length * platforms.length * filledRegions.length * devices.length;
+  // Google は mobile のみ作られる（pc は数えない）。
+  const toCreate = platforms.reduce(
+    (sum, platform) =>
+      sum +
+      keywords.length * filledRegions.length * devicesForPlatform(platform, devices).length,
+    0,
+  );
 
   // 新規顧客は platform ごとの件数が等しい。
   const toCreateByPlatform = useMemo(
@@ -57,10 +70,10 @@ export function NewClientForm() {
       Object.fromEntries(
         platforms.map((platform) => [
           platform,
-          keywords.length * filledRegions.length * devices.length,
+          keywords.length * filledRegions.length * devicesForPlatform(platform, devices).length,
         ]),
       ),
-    [platforms, keywords.length, filledRegions.length, devices.length],
+    [platforms, keywords.length, filledRegions.length, devices],
   );
 
   const plan = useMemo(
@@ -172,7 +185,7 @@ export function NewClientForm() {
         <div className="mt-4">
           <PlatformModeField
             value={platformMode}
-            onChange={setPlatformMode}
+            onChange={changePlatformMode}
             hint="「両方」を選ぶと、1キーワードにつき Google と Yahoo! の2件を登録します。"
           />
         </div>
@@ -203,7 +216,7 @@ export function NewClientForm() {
         />
 
         <div className="mt-4">
-          <DeviceModeField value={deviceMode} onChange={setDeviceMode} />
+          <DeviceModeField value={deviceMode} onChange={setDeviceMode} platforms={platforms} />
         </div>
       </section>
 

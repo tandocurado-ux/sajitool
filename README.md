@@ -170,6 +170,29 @@ Yahoo! だけ / 両方）を選び、1枠あたり N 件以内になるよう時
 
 Yahoo! のフロー・username・リトライ（1回）は従来どおりで変えていない。
 
+### Google は mobile のみ計測
+
+実測で Google × mobile は通り（exit IP 133.106 帯で ok が続く）、Google × pc は
+BOT 検知（/sorry/）が続くため、**Google の pc は登録も実行もしない**（`lib/device-policy.ts`
+と `engine/runner.py` の `ALLOWED_DEVICES`）。Yahoo! は従来どおり pc / mobile の両方。
+
+- 登録 UI: Google を含む登録では pc の選択肢が無効になり、「両方」でも Google 側は mobile だけ作られる。
+  単発追加でも Google のキーワードを選ぶと pc は選べない
+- サーバー: 一括登録の生成で Google × pc を作らず、単発追加と即時実行は Google × pc を弾く
+- エンジン: DB に Google × pc が残っていても `scheduler.py` は積まず
+  「Google の pc はスキップ（mobile のみ計測）」とログに出す（即時実行・run_once も同様）
+
+既存の Google × pc を洗い出す SQL（削除は手動で）:
+
+```sql
+select s.id, c.name as client, k.keyword, k.platform, s.device, s.times, s.enabled, s.created_at
+from schedules s
+join keywords k on k.id = s.keyword_id
+join clients c on c.id = k.client_id
+where k.platform = 'google' and s.device = 'pc'
+order by c.name, k.keyword;
+```
+
 ### 即時計測（今すぐ1件）
 
 スケジュールの時刻枠を待たずに1件だけ撃って結果を確かめられる（検証用）。

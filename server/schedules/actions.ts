@@ -7,6 +7,8 @@ import { getUserFrom } from "@/server/auth/queries";
 import { parseId } from "@/lib/parse";
 import type { ActionState } from "@/lib/action-state";
 import { parseScheduleInput } from "./schema";
+import { GOOGLE_DEVICE_NOTE, isAllowedCombination } from "@/lib/device-policy";
+import type { Device, Platform } from "@/lib/types";
 
 /**
  * キーワードと地域が同一顧客のものか確認する。
@@ -16,9 +18,11 @@ async function resolveOwnedClientId(
   supabase: SupabaseClient,
   keywordId: string,
   regionId: string,
-): Promise<{ ok: true; clientId: string } | { ok: false; error: string }> {
+): Promise<
+  { ok: true; clientId: string; platform: Platform } | { ok: false; error: string }
+> {
   const [keyword, region] = await Promise.all([
-    supabase.from("keywords").select("client_id").eq("id", keywordId).maybeSingle(),
+    supabase.from("keywords").select("client_id, platform").eq("id", keywordId).maybeSingle(),
     supabase.from("regions").select("client_id").eq("id", regionId).maybeSingle(),
   ]);
 
@@ -28,7 +32,11 @@ async function resolveOwnedClientId(
     return { ok: false, error: "同じ顧客のキーワードと地域を選択してください。" };
   }
 
-  return { ok: true, clientId: String(keyword.data.client_id) };
+  return {
+    ok: true,
+    clientId: String(keyword.data.client_id),
+    platform: String(keyword.data.platform) as Platform,
+  };
 }
 
 export async function addSchedule(
@@ -48,6 +56,10 @@ export async function addSchedule(
     parsed.data.region_id,
   );
   if (!owned.ok) return { error: owned.error };
+  // 画面をすり抜けても Google × pc は DB に入れない。
+  if (!isAllowedCombination(owned.platform, parsed.data.device as Device)) {
+    return { error: `${GOOGLE_DEVICE_NOTE}。デバイスは「モバイル」を選んでください。` };
+  }
 
   const { error } = await supabase
     .from("schedules")

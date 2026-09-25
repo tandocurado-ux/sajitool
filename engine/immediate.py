@@ -135,6 +135,12 @@ def _run_one(sb, user_id: str, request: dict[str, Any], *, use_proxy: bool, head
         _finish(sb, user_id, request_id, result=None, error=f"スケジュールを取得できません: {caught}")
         return
 
+    reason = runner.skip_reason(target)
+    if reason is not None:
+        print(f"  {reason}: {runner.describe_target(target)}")
+        _finish(sb, user_id, request_id, result=None, error=reason)
+        return
+
     runner.print_header(
         keyword=target.keyword,
         region=runner.region_text(target),

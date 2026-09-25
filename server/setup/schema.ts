@@ -186,6 +186,14 @@ export function parseScheduleSettings(
   if (!DEVICE_MODES.includes(deviceMode)) {
     return { ok: false, error: "デバイスを選択してください。" };
   }
+  // Google は mobile のみ計測する。Google だけを選んで pc 単独だと何も作られないので弾く。
+  // 「両方」は Google 側が mobile だけになる（apply 側で絞る）。
+  if (platformMode === "google" && deviceMode === "pc") {
+    return {
+      ok: false,
+      error: "Google は mobile のみ計測します（pc は BOT 検知されやすいため）。デバイスは「モバイル」か「両方」を選んでください。",
+    };
+  }
 
   const timeMode = String(formData.get("time_mode") ?? "fixed") as TimeMode;
   if (!TIME_MODES.includes(timeMode)) {

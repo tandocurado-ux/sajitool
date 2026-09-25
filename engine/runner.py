@@ -44,6 +44,23 @@ ERROR_LABELS = {
 # 新しい exit IP を引き直せば通る見込みがあるもの。
 RETRYABLE_ERRORS = ("search_box_not_found", dev.PROTOCOL_ERROR)
 
+# platform ごとに計測してよいデバイス（lib/device-policy.ts と同じ表）。
+# Google は mobile のみ。pc は BOT 検知（/sorry/）が続くため、登録が残っていても撃たない。
+ALLOWED_DEVICES: dict[str, tuple[str, ...]] = {
+    "google": ("mobile",),
+    "yahoo": ("pc", "mobile"),
+}
+
+
+def skip_reason(target: ScheduleTarget) -> Optional[str]:
+    """このスケジュールを撃ってはいけない理由。撃ってよければ None。"""
+    allowed = ALLOWED_DEVICES.get(target.platform)
+    if allowed is None or target.device in allowed:
+        return None
+    if target.platform == "google":
+        return "Google の pc はスキップ（mobile のみ計測）"
+    return f"{target.platform} の {target.device} は計測対象外"
+
 # Google だけ: 判定不能（最終 URL が SERP でない / SERP の DOM 未到達）も
 # BOT の疑いとしてリトライ対象にする。Yahoo! は従来どおり対象外。
 GOOGLE_INDETERMINATE_ERRORS = ("not_searched", "no_results")
