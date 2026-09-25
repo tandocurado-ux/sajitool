@@ -4,6 +4,7 @@ import { SLOT_CAPACITY_SECONDS } from "@/lib/intervals";
 import type { SchedulePlan, SpreadSuggestion } from "@/lib/schedule-plan";
 import { PLATFORM_LABELS, type Platform } from "@/lib/types";
 import { subtleButtonClass } from "../ui";
+import { CapacityNotice } from "./capacity-notice";
 
 type Props = {
   plan: SchedulePlan;
@@ -30,7 +31,7 @@ export function SchedulePreview({
 }: Props) {
   if (plan.slotCount === 0 || toCreate === 0) return null;
 
-  const tone = plan.overCapacity
+  const tone = plan.overCapacity || plan.dailyCapacity.over
     ? "border-danger-line bg-danger-soft text-danger"
     : plan.overRecommended
       ? "border-warn-line bg-warn-soft text-warn"
@@ -113,6 +114,8 @@ export function SchedulePreview({
           このままだと超過分は実行されません。
         </p>
       ) : null}
+
+      <CapacityNotice capacity={plan.dailyCapacity} />
     </div>
   );
 }

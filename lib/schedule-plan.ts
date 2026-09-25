@@ -1,7 +1,10 @@
 import {
+  DAILY_WINDOW_HOURS,
   SLOT_CAPACITY_SECONDS,
   averageIntervalFor,
+  dailyMaxFor,
   recommendedPerSlot,
+  secondsPerItem,
 } from "./intervals";
 import { TIME_OPTIONS, timeSlotsBetween } from "./parse";
 
@@ -21,6 +24,30 @@ export type SchedulePlanInput = {
   spreadEnd: string;
   rotations: number;
   platforms: readonly string[];
+  /**
+   * アカウント全体で登録済みの1日の実行回数（platform 別）。
+   * 渡すと「1日の消化能力」に対する充足率を出す（無ければ今回の分だけで計算）。
+   */
+  existingRunsByPlatform?: Partial<Record<string, number>>;
+};
+
+/** platform ごとの「1日の登録量 vs 消化能力」。 */
+export type PlatformCapacity = {
+  platform: string;
+  existing: number;
+  added: number;
+  registered: number;
+  capacity: number;
+  ratio: number;
+  over: boolean;
+};
+
+export type DailyCapacity = {
+  windowHours: number;
+  platforms: PlatformCapacity[];
+  /** エンジンは逐次実行なので、全 platform の所要時間の合計も1日に収まる必要がある。 */
+  combined: { neededMinutes: number; windowMinutes: number; ratio: number; over: boolean };
+  over: boolean;
 };
 
 /** platform ごとの「1枠にどれだけ入るか」。 */
@@ -70,7 +97,58 @@ export type SchedulePlan = {
   overRecommended: boolean;
   /** 推奨上限を超えているときの分散提案。超えていなければ null。 */
   suggestion: SpreadSuggestion | null;
+  /** 1日の消化能力に対する登録量（アカウント全体 + 今回）。 */
+  dailyCapacity: DailyCapacity;
 };
+
+/**
+ * platform 別の「登録件数 / 1日の消化見込み / 充足率」と、逐次実行を前提にした合計。
+ * existing はアカウント全体の登録済み（1日の実行回数）、added は今回の追加分。
+ */
+export function computeDailyCapacity(
+  addedRunsByPlatform: Record<string, number>,
+  existingRunsByPlatform: Partial<Record<string, number>> = {},
+): DailyCapacity {
+  const platformsSeen = new Set([
+    ...Object.keys(existingRunsByPlatform),
+    ...Object.keys(addedRunsByPlatform),
+  ]);
+  const windowSeconds = DAILY_WINDOW_HOURS * 3600;
+  let neededSeconds = 0;
+  const platforms: PlatformCapacity[] = [];
+  for (const platform of ["google", "yahoo", ...platformsSeen].filter(
+    (value, index, all) => platformsSeen.has(value) && all.indexOf(value) === index,
+  )) {
+    const existing = existingRunsByPlatform[platform] ?? 0;
+    const added = addedRunsByPlatform[platform] ?? 0;
+    const registered = existing + added;
+    if (registered === 0) continue;
+    const capacity = dailyMaxFor(platform);
+    neededSeconds += registered * secondsPerItem(platform);
+    platforms.push({
+      platform,
+      existing,
+      added,
+      registered,
+      capacity,
+      ratio: registered / capacity,
+      over: registered > capacity,
+    });
+  }
+  const combinedRatio = windowSeconds > 0 ? neededSeconds / windowSeconds : 0;
+  const combined = {
+    neededMinutes: neededSeconds / 60,
+    windowMinutes: windowSeconds / 60,
+    ratio: combinedRatio,
+    over: combinedRatio > 1,
+  };
+  return {
+    windowHours: DAILY_WINDOW_HOURS,
+    platforms,
+    combined,
+    over: combined.over || platforms.some((entry) => entry.over),
+  };
+}
 
 const FULL_DAY_SLOTS = TIME_OPTIONS.length; // 96
 const MAX_ROTATIONS = 3;
@@ -137,6 +215,10 @@ export function computeSchedulePlan(input: SchedulePlanInput): SchedulePlan {
   const averageInterval = averageIntervalFor(input.platforms);
   const drainSeconds = perSlot * averageInterval;
   const overRecommended = platformLoads.some((load) => load.over);
+  const dailyCapacity = computeDailyCapacity(
+    Object.fromEntries(platformLoads.map((load) => [load.platform, load.runsPerDay])),
+    input.existingRunsByPlatform,
+  );
 
   return {
     spreadSlots,
@@ -149,6 +231,7 @@ export function computeSchedulePlan(input: SchedulePlanInput): SchedulePlan {
     platformLoads,
     overRecommended,
     suggestion: overRecommended ? suggestSpread(input, counts) : null,
+    dailyCapacity,
   };
 }
 

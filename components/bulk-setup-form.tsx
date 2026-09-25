@@ -42,6 +42,8 @@ type Props = {
   scheduleCountByKeyword: { keyword: string; count: number; times: string[] }[];
   /** 既存スケジュールから推定した前回の設定。無ければ null。 */
   previousSettings: PreviousSettings | null;
+  /** アカウント全体で登録済みの1日の実行回数（platform 別）。消化能力の充足率に使う。 */
+  existingRunsByPlatform?: Partial<Record<string, number>>;
 };
 
 const SEP = "\u0000";
@@ -74,6 +76,7 @@ export function BulkSetupForm({
   existingScheduleKeys,
   scheduleCountByKeyword,
   previousSettings,
+  existingRunsByPlatform = {},
 }: Props) {
   const [state, formAction, pending] = useActionState(
     bulkCreateSchedules,
@@ -204,8 +207,9 @@ export function BulkSetupForm({
         spreadEnd: timing.spreadEnd,
         rotations: timing.rotations,
         platforms,
+        existingRunsByPlatform,
       }),
-    [toCreate, toCreateByPlatform, timing, platforms],
+    [toCreate, toCreateByPlatform, timing, platforms, existingRunsByPlatform],
   );
 
   const recommendSpread = platforms.includes("google");
@@ -248,6 +252,9 @@ export function BulkSetupForm({
     }
     if (plan.overCapacity) {
       lines.push("", "⚠ 1枠(60分)で消化しきれません。次の枠に食い込み、超過分は実行されません。");
+    }
+    if (plan.dailyCapacity.over) {
+      lines.push("", "⚠ 登録件数が1日の消化能力を超えています。超過分は消化されずスキップされます。");
     }
     if (toSkip > 0) lines.push(`（既に登録済みの ${toSkip} 件はスキップします）`);
     lines.push("", "よろしいですか？");

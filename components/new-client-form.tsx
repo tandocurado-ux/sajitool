@@ -28,7 +28,12 @@ import {
 } from "./setup/schedule-timing-fields";
 import { cardClass, inputClass, labelClass, primaryButtonClass, subtleButtonClass } from "./ui";
 
-export function NewClientForm() {
+type Props = {
+  /** アカウント全体で登録済みの1日の実行回数（platform 別）。消化能力の充足率に使う。 */
+  existingRunsByPlatform?: Partial<Record<string, number>>;
+};
+
+export function NewClientForm({ existingRunsByPlatform = {} }: Props) {
   const [state, formAction, pending] = useActionState(
     createClientWithSetup,
     initialNewClientState,
@@ -87,8 +92,9 @@ export function NewClientForm() {
         spreadEnd: timing.spreadEnd,
         rotations: timing.rotations,
         platforms,
+        existingRunsByPlatform,
       }),
-    [toCreate, toCreateByPlatform, timing, platforms],
+    [toCreate, toCreateByPlatform, timing, platforms, existingRunsByPlatform],
   );
 
   const recommendSpread = platforms.includes("google");
@@ -139,6 +145,9 @@ export function NewClientForm() {
           "",
           "⚠ 1枠(60分)で消化しきれません。次の枠に食い込み、超過分は実行されません。",
         );
+      }
+      if (plan.dailyCapacity.over) {
+        lines.push("", "⚠ 登録件数が1日の消化能力を超えています。超過分は消化されずスキップされます。");
       }
     }
     lines.push("", "よろしいですか？");

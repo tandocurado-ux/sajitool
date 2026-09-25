@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { NewClientForm } from "@/components/new-client-form";
+import { getDailyRunsByPlatform } from "@/server/schedules/capacity";
 
 export const metadata = {
   title: "顧客を追加 | サジェツール",
 };
 
-export default function NewClientPage() {
+export default async function NewClientPage() {
+  const existingRunsByPlatform = await getDailyRunsByPlatform();
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -22,7 +24,7 @@ export default function NewClientPage() {
         </p>
       </div>
 
-      <NewClientForm />
+      <NewClientForm existingRunsByPlatform={existingRunsByPlatform} />
     </div>
   );
 }

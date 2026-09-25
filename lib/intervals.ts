@@ -56,3 +56,48 @@ export function recommendedPerSlot(platform: string): number {
     Math.floor(SLOT_CAPACITY_SECONDS / averageIntervalSeconds(platform) / 2),
   );
 }
+
+/**
+ * 1件の検索そのものにかかる見込み秒数（間隔とは別。Google はリトライ込みの目安）。
+ * engine/scheduler.py の SEARCH_SECONDS_ESTIMATE と同じ値。
+ */
+export const SEARCH_SECONDS_ESTIMATE: Record<string, number> = {
+  google: 40,
+  yahoo: 15,
+};
+
+/** 1日の実行可能時間（時間）。既定 06:00〜23:00 の 17 時間。 */
+export const DAILY_WINDOW_HOURS = (() => {
+  const value = Number(process.env.NEXT_PUBLIC_DAILY_WINDOW_HOURS);
+  return Number.isFinite(value) && value > 0 && value <= 24 ? value : 17;
+})();
+
+/** 理論値に掛ける安全係数（リトライ・blocked・再起動を見込む）。 */
+export const DAILY_CAPACITY_SAFETY = 0.8;
+
+/** 1件あたりの所要秒数（間隔の平均 + 検索そのものの見込み）。 */
+export function secondsPerItem(platform: string): number {
+  return averageIntervalSeconds(platform) + (SEARCH_SECONDS_ESTIMATE[platform] ?? 30);
+}
+
+const DAILY_MAX_OVERRIDE: Record<string, number> = {
+  google: envPositiveInt(process.env.NEXT_PUBLIC_GOOGLE_DAILY_MAX, 0),
+  yahoo: envPositiveInt(process.env.NEXT_PUBLIC_YAHOO_DAILY_MAX, 0),
+};
+
+/**
+ * platform ごとの「1日に消化できる件数」の上限。
+ *
+ * 計測エンジンは Google と Yahoo! を逐次に実行するので、これは platform 単体で
+ * 1日を使い切ったときの上限。NEXT_PUBLIC_GOOGLE_DAILY_MAX / NEXT_PUBLIC_YAHOO_DAILY_MAX
+ * で固定値にできる（engine 側の GOOGLE_DAILY_MAX / YAHOO_DAILY_MAX と揃えること）。
+ * 既定は 実行可能時間 ÷ 1件あたり所要 × 安全係数（Google 約 300 件、Yahoo! 約 1,000 件）。
+ */
+export function dailyMaxFor(platform: string): number {
+  const override = DAILY_MAX_OVERRIDE[platform];
+  if (override) return override;
+  return Math.max(
+    1,
+    Math.floor((DAILY_WINDOW_HOURS * 3600) / secondsPerItem(platform) * DAILY_CAPACITY_SAFETY),
+  );
+}

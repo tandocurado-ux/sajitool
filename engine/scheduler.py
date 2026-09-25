@@ -7,9 +7,11 @@ runner.py 経由でそのまま呼ぶ。検索レシピ自体には一切手を�
 
 動作:
   - 起動時と毎分、enabled=true の schedules を読み直す
-  - times（JST）が現在の「分」と一致したものをキューに積む
-  - キューは直列に1件ずつ実行する（Chrome を同時に複数立ち上げない）
-  - 実行と実行の間に 30〜90 秒のランダム間隔を空ける
+  - times（JST）が現在の「分」と一致したものを platform 別のレーンに積む
+  - 実行は逐次（Chrome は常に1本。並列化はヤマアラシが回線の奪い合いで revert
+    したため採用しない）。ただし取り出しは Yahoo! と Google のラウンドロビンで、
+    重い Google が前を占有して軽い Yahoo! を待たせない。各レーンは自分の実行間隔を持つ
+  - 枠の上限判定（1枠で消化できない分はスキップ）と、1日の消化能力の見込みはレーンごと
   - 同じ schedule × 時刻 は同じ日に二度実行しない
     （再起動時は runs の当日分を読んで復元する）
   - 1件が失敗してもプロセスは死なない。runs に error で記録して次へ進む
@@ -26,7 +28,7 @@ import signal
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Sequence
@@ -89,6 +91,23 @@ DEFAULT_GOOGLE_SKIP_LOG = ENGINE_DIR / "skipped_google.jsonl"
 # circuit breaker を発動させる Google の連続 blocked 数（既定 3）。
 DEFAULT_GOOGLE_BREAKER_THRESHOLD = 3
 
+# メイン loop の周期（秒）。レーンの待ち時間判定と即時実行の確認に使う。
+LOOP_TICK_SECONDS = 0.5
+
+# 1件の検索そのものにかかる見込み秒数（間隔とは別。Google はリトライ込みの目安）。
+# lib/intervals.ts の SEARCH_SECONDS_ESTIMATE と同じ値にしておく。
+SEARCH_SECONDS_ESTIMATE: dict[str, float] = {"google": 40.0, "yahoo": 15.0}
+# 1日の実行可能時間（時間）。DAILY_WINDOW_HOURS で変更可（既定 06:00〜23:00 の 17 時間）。
+DEFAULT_DAILY_WINDOW_HOURS = 17.0
+# 理論値に掛ける安全係数（リトライ・blocked・再起動を見込む）。
+DAILY_CAPACITY_SAFETY = 0.8
+# 1日の登録上限の env 名（設定があれば計算値より優先）。
+DAILY_MAX_ENV: dict[str, str] = {"google": "GOOGLE_DAILY_MAX", "yahoo": "YAHOO_DAILY_MAX"}
+
+
+def daily_window_seconds() -> float:
+    return _env_float("DAILY_WINDOW_HOURS", DEFAULT_DAILY_WINDOW_HOURS) * 3600.0
+
 
 def google_breaker_threshold() -> int:
     value = int(_env_float("GOOGLE_BREAKER_THRESHOLD", float(DEFAULT_GOOGLE_BREAKER_THRESHOLD)))
@@ -100,6 +119,21 @@ class Job:
     target: ScheduleTarget
     slot: str  # "HH:MM"
     key: str
+
+
+@dataclass
+class Lane:
+    """platform ごとの実行レーン。キューと「次に実行してよい時刻」を持つ。"""
+
+    platform: str
+    queue: list[Job] = field(default_factory=list)
+    # time.monotonic() ベース。この時刻まで次を実行しない（レーンごとの間隔）。
+    next_allowed_at: float = 0.0
+    # 完了件数（起動からの累計。ログ用）。
+    completed: int = 0
+
+
+LANE_ORDER = ("yahoo", "google")
 
 
 def done_key(date_text: str, schedule_id: str, slot: str) -> str:
@@ -265,7 +299,10 @@ class Scheduler:
 
         self.targets: list[ScheduleTarget] = []
         self.done: set[str] = set()
-        self.queue: list[Job] = []
+        # platform 別のレーン。未知の platform は lane_for() が作る。
+        self.lanes: dict[str, Lane] = {name: Lane(name) for name in LANE_ORDER}
+        # 直前に実行した platform。次はこれ以外のレーンを優先する（ラウンドロビン）。
+        self.last_platform: Optional[str] = None
         self.history: list[alerts.ExecutionRecord] = []
         self.consecutive_errors: dict[str, int] = {}
         self.notifier = alerts.Notifier(os.environ.get("ALERT_WEBHOOK_URL"))
@@ -285,13 +322,57 @@ class Scheduler:
         self.queue_max = queue_max_items()
 
         self.stopping = False
-        self.next_allowed_at = 0.0  # time.monotonic() ベース
         # 即時実行キューを次に確認する時刻（time.monotonic() ベース）。
         self.next_immediate_check = 0.0
         # どの分まで見たか。起動前の枠を積まないための基準。
         self.last_scanned_minute: Optional[datetime] = None
         self.last_loop_minute: Optional[str] = None
         self.last_summary_hour: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # レーン
+    # ------------------------------------------------------------------
+
+    def lane_for(self, platform: str) -> Lane:
+        lane = self.lanes.get(platform)
+        if lane is None:
+            lane = Lane(platform)
+            self.lanes[platform] = lane
+        return lane
+
+    @property
+    def queue(self) -> list[Job]:
+        """全レーンのキューを並べたもの（ログ・互換用。読み取り専用）。"""
+        return [job for lane in self.lanes.values() for job in lane.queue]
+
+    @queue.setter
+    def queue(self, jobs: list[Job]) -> None:
+        for lane in self.lanes.values():
+            lane.queue = []
+        for job in jobs:
+            self.lane_for(job.target.platform).queue.append(job)
+
+    def describe_lanes(self) -> str:
+        return " / ".join(
+            f"{lane.platform} キュー {len(lane.queue)} 件（完了 {lane.completed}）"
+            for lane in self.lanes.values()
+        )
+
+    def search_seconds(self, platform: str) -> float:
+        return SEARCH_SECONDS_ESTIMATE.get(platform, 30.0)
+
+    def seconds_per_item(self, platform: str) -> float:
+        """1件あたりの所要（間隔の平均 + 検索そのものの見込み）。"""
+        return self.average_interval(platform) + self.search_seconds(platform)
+
+    def daily_max(self, platform: str) -> int:
+        """1日に消化できる件数の上限。env があればそれ、無ければ理論値 × 安全係数。"""
+        env_name = DAILY_MAX_ENV.get(platform)
+        if env_name:
+            configured = int(_env_float(env_name, 0.0))
+            if configured > 0:
+                return configured
+        return max(1, int(daily_window_seconds() / self.seconds_per_item(platform) * DAILY_CAPACITY_SAFETY))
 
     # ------------------------------------------------------------------
     # 実行間隔
@@ -332,6 +413,7 @@ class Scheduler:
         # Google × pc など計測対象外の組み合わせは、DB に残っていても積まない
         # （初めて見たものだけログに出す）。Yahoo! は pc / mobile とも対象。
         kept: list[ScheduleTarget] = []
+        newly_skipped: dict[str, list[ScheduleTarget]] = {}
         for target in loaded:
             reason = runner.skip_reason(target)
             if reason is None:
@@ -339,10 +421,11 @@ class Scheduler:
                 continue
             if target.schedule_id not in self.skipped_targets:
                 self.skipped_targets.add(target.schedule_id)
-                print(
-                    f"[{now:%H:%M}] {reason}: {runner.describe_target(target)}"
-                    f"（schedule {target.schedule_id}）"
-                )
+                newly_skipped.setdefault(reason, []).append(target)
+        for reason, targets in newly_skipped.items():
+            examples = ", ".join(runner.describe_target(t) for t in targets[:3])
+            more = f" … 他 {len(targets) - 3} 件" if len(targets) > 3 else ""
+            print(f"[{now:%H:%M}] {reason}: {len(targets)} 件（例: {examples}{more}）")
         self.targets = kept
 
     def restore_from_runs(self, now: datetime) -> int:
@@ -453,19 +536,26 @@ class Scheduler:
             return
 
         ordered = order_jobs(due, seed=f"{window[0][0]}|{window[0][1]}")
-        accepted, dropped = self.apply_queue_cap(ordered, now)
-        self.queue.extend(accepted)
-        self.report_batch(now, accepted, dropped)
+        # platform 別のレーンに分けて積む（順序は order_jobs のまま）。
+        # 枠の上限判定もレーンごと。Google が溢れても Yahoo! は影響を受けない。
+        by_platform: dict[str, list[Job]] = {}
+        for job in ordered:
+            by_platform.setdefault(job.target.platform, []).append(job)
+        for platform, jobs in by_platform.items():
+            lane = self.lane_for(platform)
+            accepted, dropped = self.apply_queue_cap(lane, jobs, now)
+            lane.queue.extend(accepted)
+            self.report_batch(now, lane, accepted, dropped)
 
     def apply_queue_cap(
-        self, jobs: list[Job], now: datetime
+        self, lane: Lane, jobs: list[Job], now: datetime
     ) -> tuple[list[Job], list[Job]]:
-        """1つの時刻枠で消化できない量は積まない。
+        """そのレーンが1つの時刻枠で消化できない量は積まない。
 
-        上限は固定値ではなく、その枠の platform 構成と間隔設定から決まる。
-        Yahoo! だけなら多く積めるし、Google が多ければ少なくなる。
+        上限は固定値ではなく、レーンの間隔設定から決まる。レーンは並列に動くので
+        Yahoo! の枠は Yahoo! だけ、Google の枠は Google だけで判断する。
         """
-        budget = SLOT_CAPACITY_SECONDS - self.estimated_seconds(self.queue)
+        budget = SLOT_CAPACITY_SECONDS - self.estimated_seconds(lane.queue)
 
         accepted: list[Job] = []
         used = 0.0
@@ -476,22 +566,20 @@ class Scheduler:
             accepted.append(job)
             used += cost
 
-        # 絶対上限が設定されていれば、さらにそこで切る。
+        # 絶対上限が設定されていれば、さらにそこで切る（レーンごと）。
         if self.queue_max > 0:
-            room = max(0, self.queue_max - len(self.queue))
+            room = max(0, self.queue_max - len(lane.queue))
             accepted = accepted[:room]
 
         dropped = jobs[len(accepted) :]
         if not dropped:
             return accepted, []
 
-        counts = Counter(job.target.platform for job in dropped)
-        breakdown = " / ".join(f"{name} {count}" for name, count in sorted(counts.items()))
         self.notifier.alert(
-            "queue_overflow",
+            f"queue_overflow:{lane.platform}",
             (
-                f"1つの時刻枠（{SLOT_CAPACITY_SECONDS // 60} 分）で消化できないため、"
-                f"{len(dropped)} 件（{breakdown}）を積みませんでした。"
+                f"{lane.platform} レーンが1つの時刻枠（{SLOT_CAPACITY_SECONDS // 60} 分）で"
+                f"消化できないため、{len(dropped)} 件を積みませんでした。"
                 "当日中の再実行はしません。一括登録の「時刻の自動分散」で"
                 "時刻をばらすか、実行間隔を見直してください。"
             ),
@@ -500,19 +588,18 @@ class Scheduler:
         return accepted, dropped
 
     def report_batch(
-        self, now: datetime, jobs: list[Job], dropped: Optional[list[Job]] = None
+        self, now: datetime, lane: Lane, jobs: list[Job], dropped: Optional[list[Job]] = None
     ) -> None:
-        """積んだ件数と消化見込みを出す。枠に収まらないなら警告する。"""
+        """レーンに積んだ件数と消化見込みを出す。枠に収まらないなら警告する。"""
         if dropped:
             print(
-                f"[{now:%H:%M}] ! 枠に収まらないため {len(dropped)} 件を積みませんでした。"
+                f"[{now:%H:%M}] ! {lane.platform} レーンの枠に収まらないため "
+                f"{len(dropped)} 件を積みませんでした。"
             )
         if not jobs:
             return
 
-        counts = Counter(job.target.platform for job in jobs)
-        breakdown = " / ".join(f"{name} {count}" for name, count in sorted(counts.items()))
-        print(f"[{now:%H:%M}] 実行予定に {len(jobs)} 件追加（{breakdown}）")
+        print(f"[{now:%H:%M}] {lane.platform} レーンに {len(jobs)} 件追加")
 
         for job in jobs[:MAX_BATCH_LINES]:
             print(f"    {job.slot}  {runner.describe_target(job.target)}")
@@ -520,21 +607,21 @@ class Scheduler:
             print(f"    … 他 {len(jobs) - MAX_BATCH_LINES} 件")
 
         estimate = self.estimated_seconds(jobs)
-        queued = self.estimated_seconds(self.queue)
+        queued = self.estimated_seconds(lane.queue)
         print(
             f"    消化見込み: 約 {estimate / 60:.0f} 分"
-            f"（platform 別の平均間隔 × {len(jobs)} 件。検索そのものの時間は別）"
+            f"（{lane.platform} の平均間隔 × {len(jobs)} 件。検索そのものの時間は別）"
         )
         if queued > estimate:
-            print(f"    キュー全体の消化見込み: 約 {queued / 60:.0f} 分")
+            print(f"    {lane.platform} レーン全体の消化見込み: 約 {queued / 60:.0f} 分")
 
         if queued > SLOT_CAPACITY_SECONDS:
             slot = min(job.slot for job in jobs)
             self.notifier.alert(
-                f"slot_overflow:{slot}",
+                f"slot_overflow:{lane.platform}:{slot}",
                 (
-                    f"{slot} の時点でキューが {len(self.queue)} 件あり、消化に約 "
-                    f"{queued / 60:.0f} 分かかる見込みです"
+                    f"{slot} の時点で {lane.platform} レーンのキューが {len(lane.queue)} 件あり、"
+                    f"消化に約 {queued / 60:.0f} 分かかる見込みです"
                     f"（1枠 {SLOT_CAPACITY_SECONDS // 60} 分）。次の枠に食い込みます。"
                 ),
                 now=now,
@@ -558,7 +645,7 @@ class Scheduler:
     def execute(self, job: Job) -> None:
         run_at = runner.now_jst()
         print("")
-        print(f"[{run_at:%H:%M:%S}] 実行開始（予定 {job.slot}）")
+        print(f"[{run_at:%H:%M:%S}] [{job.target.platform}] 実行開始（予定 {job.slot}）")
         runner.print_header(
             keyword=job.target.keyword,
             region=runner.region_text(job.target),
@@ -600,6 +687,9 @@ class Scheduler:
         # Google の circuit breaker: リトライを尽くしても blocked だった実行を1カウントとし、
         # 連続 GOOGLE_BREAKER_THRESHOLD 件（既定 3）で初めてこのバッチの残りをスキップする。
         # 単発の外れ IP では止めない。blocked 以外の結果でカウントは戻る。Yahoo! は無関係。
+        # Google の circuit breaker: リトライを尽くしても blocked だった実行を1カウントとし、
+        # 連続 GOOGLE_BREAKER_THRESHOLD 件（既定 3）で Google レーンのキューだけを捨てる。
+        # 単発の外れ IP では止めない。blocked 以外の結果でカウントは戻る。Yahoo! は無関係。
         if job.target.platform == "google":
             if outcome.status == "blocked":
                 self.google_consecutive_blocked += 1
@@ -639,10 +729,11 @@ class Scheduler:
         このバッチの残りは実行しない（積んだ時点で done 扱いなので当日の再実行も
         しない）。Yahoo! のジョブはそのまま残す。
         """
-        skipped = [job for job in self.queue if job.target.platform == "google"]
+        lane = self.lane_for("google")
+        skipped = list(lane.queue)
+        lane.queue = []
         if not skipped:
             return 0
-        self.queue = [job for job in self.queue if job.target.platform != "google"]
         self.google_breaker_skipped += len(skipped)
         # スキップしたペアは後で拾えるよう、メモリと JSONL の両方に残す
         # （runs には書かない＝スキーマは変えない）。
@@ -721,6 +812,7 @@ class Scheduler:
             f"[{now:%m/%d %H:%M}] 直近1時間: 実行 {len(recent)} 件 / "
             f"ok {counts['ok']} / blocked {counts['blocked']} / error {counts['error']}"
         )
+        print(f"    レーン: {self.describe_lanes()}")
 
         keep_from = now - timedelta(hours=HISTORY_HOURS)
         self.history = [record for record in self.history if record.at >= keep_from]
@@ -823,7 +915,11 @@ class Scheduler:
                 else f"枠の消化見込み（{SLOT_CAPACITY_SECONDS // 60} 分）で判断"
             )
         )
-        print(f"  起動直後のキュー: {len(self.queue)} 件")
+        print(
+            f"  実行方式   : 逐次（Chrome は常に1本）。レーン {', '.join(self.lanes)} を"
+            "ラウンドロビンで取り出し、Google が Yahoo! を待たせない"
+        )
+        print(f"  起動直後のキュー: {len(self.queue)} 件（{self.describe_lanes()}）")
         print(
             "  アラート   : "
             + ("webhook へ通知" if self.notifier.enabled else "ログのみ（ALERT_WEBHOOK_URL 未設定）")
@@ -851,8 +947,116 @@ class Scheduler:
             print(f"    {slot}  {runner.describe_target(target)}")
         if len(plan) > MAX_PLAN_LINES:
             print(f"    … 他 {len(plan) - MAX_PLAN_LINES} 件")
+        self.print_forecast(now, plan)
         print("")
         print("停止するには Ctrl+C を押してください。")
+
+    def print_forecast(self, now: datetime, plan: list[tuple[str, ScheduleTarget]]) -> None:
+        """platform 別に「登録件数 / 1日の消化見込み / 充足率」を出し、超過なら警告する。
+
+        1日の登録件数は targets の times の総数（当日実行済みぶんも含む）。
+        消化見込みは 1日の実行可能時間（DAILY_WINDOW_HOURS）÷ 1件あたり所要 × 安全係数、
+        または GOOGLE_DAILY_MAX / YAHOO_DAILY_MAX。実行は逐次なので合計も見る。
+        """
+        registered = Counter(target.platform for target in self.targets for _ in target.times)
+        remaining = Counter(target.platform for _slot, target in plan)
+        if not registered:
+            return
+        window = daily_window_seconds()
+        print(f"  1日の消化能力（実行可能 {window / 3600:.0f} 時間、逐次実行）:")
+        total_needed = 0.0
+        over_any = False
+        for platform in list(LANE_ORDER) + sorted(set(registered) - set(LANE_ORDER)):
+            count = registered.get(platform, 0)
+            if count == 0:
+                continue
+            per_item = self.seconds_per_item(platform)
+            capacity = self.daily_max(platform)
+            ratio = count / capacity if capacity else 0.0
+            total_needed += count * per_item
+            line = (
+                f"    {platform}: 登録 {count} 件/日（本日残り {remaining.get(platform, 0)} 件） / "
+                f"消化見込み {capacity} 件/日（1件 約 {per_item / 60:.1f} 分） / 充足率 {ratio * 100:.0f}%"
+            )
+            if ratio > 1.0:
+                over_any = True
+                line += f"  ! {platform} の登録数が1日の消化能力を超えています（約 {count - capacity} 件は消化できない見込み）"
+            print(line)
+        total_ratio = total_needed / window if window else 0.0
+        line = f"    合計: 所要 約 {total_needed / 60:.0f} 分 / 実行可能 {window / 60:.0f} 分 / 充足率 {total_ratio * 100:.0f}%"
+        if total_ratio > 1.0:
+            over_any = True
+            line += "  ! Google と Yahoo! は逐次に実行するため、合計でも1日に収まりません"
+        print(line)
+        if over_any:
+            self.notifier.alert(
+                "daily_capacity",
+                "登録件数が1日の消化能力を超えています。まとめて登録の時刻分散を広げるか、"
+                "Google の登録数を減らしてください（起動ログの「1日の消化能力」参照）。",
+                now=now,
+            )
+
+    # ------------------------------------------------------------------
+    # 取り出し（逐次・ラウンドロビン）
+    # ------------------------------------------------------------------
+
+    def pick_lane(self) -> Optional[Lane]:
+        """次に実行するレーン。待ち時間が明けたレーンのうち、直前と違う platform を優先する。
+
+        Google が連続で前を占有して Yahoo! を待たせないための公平化。
+        Yahoo! がまだ自分の間隔の途中なら Google を先に進め、遊ばせない。
+        """
+        ready = [
+            lane
+            for lane in self.lanes.values()
+            if lane.queue and time.monotonic() >= lane.next_allowed_at
+        ]
+        if not ready:
+            return None
+        others = [lane for lane in ready if lane.platform != self.last_platform]
+        return (others or ready)[0]
+
+    def run_next(self, now: datetime) -> bool:
+        """レーンから1件取り出して逐次実行する。実行したら True。"""
+        lane = self.pick_lane()
+        if lane is None:
+            return False
+        job = lane.queue.pop(0)
+        self.last_platform = lane.platform
+        self.execute(job)
+        lane.completed += 1
+        gap = random.uniform(*self.interval_for(lane.platform))
+        lane.next_allowed_at = time.monotonic() + gap
+        if lane.queue:
+            print(
+                f"  次の {lane.platform} まで {gap:.0f} 秒待機します"
+                f"（{self.describe_lanes()}）"
+            )
+        return True
+
+    def tick(self, now: datetime) -> None:
+        """メイン loop の1周ぶん（テストから直接呼べるように分けてある）。"""
+        minute = now.strftime("%H:%M")
+        if minute != self.last_loop_minute:
+            self.last_loop_minute = minute
+            self.refresh(now)
+            self.enqueue_due(now)
+
+        # 即時計測の依頼はレーンより先に拾う。定時のキュー・done・
+        # circuit breaker には関与しない（単発なので）。
+        if time.monotonic() >= self.next_immediate_check:
+            self.next_immediate_check = time.monotonic() + immediate.POLL_SECONDS
+            try:
+                immediate.process_immediate_requests(
+                    self.sb, use_proxy=self.use_proxy, headless=self.headless
+                )
+            except Exception as caught:  # noqa: BLE001 - 即時実行の失敗で常駐を止めない
+                dev.log_exception(caught, context="即時実行キューの処理")
+
+        self.maybe_hourly_summary(now)
+        self.maybe_daily_summary(now)
+        if not self.stopping:
+            self.run_next(now)
 
     def run(self) -> int:
         now = runner.now_jst()
@@ -861,50 +1065,10 @@ class Scheduler:
         self.print_startup(now, restored)
 
         while not self.stopping:
-            now = runner.now_jst()
-            minute = now.strftime("%H:%M")
-
-            if minute != self.last_loop_minute:
-                self.last_loop_minute = minute
-                self.refresh(now)
-                self.enqueue_due(now)
-
-            # 即時計測の依頼は定時のキューより先に拾う。定時のキュー・done・
-            # circuit breaker には関与しない（単発なので）。
-            if time.monotonic() >= self.next_immediate_check:
-                self.next_immediate_check = time.monotonic() + immediate.POLL_SECONDS
-                try:
-                    immediate.process_immediate_requests(
-                        self.sb, use_proxy=self.use_proxy, headless=self.headless
-                    )
-                except Exception as caught:  # noqa: BLE001 - 即時実行の失敗で常駐を止めない
-                    dev.log_exception(caught, context="即時実行キューの処理")
-                if self.stopping:
-                    break
-
-            self.maybe_hourly_summary(now)
-            self.maybe_daily_summary(now)
-
-            if self.queue and time.monotonic() >= self.next_allowed_at:
-                job = self.queue.pop(0)
-                self.execute(job)
-                if self.stopping:
-                    break
-                # 次に実行するものの platform で待ち時間を決める。
-                # Yahoo! は検知されないので Google ほど空けなくてよい。
-                next_platform = (
-                    self.queue[0].target.platform if self.queue else job.target.platform
-                )
-                gap = random.uniform(*self.interval_for(next_platform))
-                self.next_allowed_at = time.monotonic() + gap
-                if self.queue:
-                    print(
-                        f"  次の実行（{next_platform}）まで {gap:.0f} 秒待機します"
-                        f"（キュー残り {len(self.queue)} 件）"
-                    )
-                continue
-
-            time.sleep(1)
+            self.tick(runner.now_jst())
+            if self.stopping:
+                break
+            time.sleep(LOOP_TICK_SECONDS)
 
         print("")
         print("停止しました。")

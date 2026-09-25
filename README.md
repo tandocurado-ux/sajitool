@@ -296,8 +296,19 @@ python engine/scheduler.py --no-proxy # 直結（ローカル確認用）
 
 - 時刻はすべて **JST 固定**（サーバーの TZ 設定に依存しない）
 - 起動時と毎分、`enabled=true` の `schedules` を読み直す
-- `times` が現在の「分」に一致したらキューに積み、**直列に1件ずつ**実行する
-  （Chrome を同時に複数立ち上げない。Google / Yahoo! が混ざっても直列）
+- `times` が現在の「分」に一致したら **platform 別のレーン（yahoo / google）** に積む。
+  実行は**逐次**（Chrome は常に1本。並列化はヤマアラシが回線の奪い合いで revert したため
+  採用しない）だが、取り出しは Yahoo! と Google の**ラウンドロビン**。重い Google が
+  連続で前を占有して軽い Yahoo! を待たせない。各レーンは自分の実行間隔を持つ
+- 枠の上限判定（1枠 60 分で消化できない分はスキップ＋アラート）はレーンごと
+- Google の circuit breaker は Google レーンのキューだけを捨てる（Yahoo! は無関係）
+- **1日の消化能力**: platform 別に「登録件数 / 消化見込み / 充足率」を起動ログに出し、
+  超過していれば警告とアラート。消化見込みは `DAILY_WINDOW_HOURS`（既定 17 時間）÷
+  1件あたり所要（間隔の平均 + 検索そのもの。Google 約 2.7 分、Yahoo! 約 48 秒）× 0.8 で、
+  既定 Google 306 件/日・Yahoo! 1,030 件/日。`GOOGLE_DAILY_MAX` / `YAHOO_DAILY_MAX` で固定できる。
+  逐次実行なので Google と Yahoo! の合計所要も1日に収まる必要があり、合計の充足率も出す。
+  同じ計算をまとめて登録・新規登録・再分散のプレビューにも出す
+  （`NEXT_PUBLIC_GOOGLE_DAILY_MAX` / `NEXT_PUBLIC_YAHOO_DAILY_MAX` / `NEXT_PUBLIC_DAILY_WINDOW_HOURS`）
 - 実行と実行の間にランダムな間隔を空ける。**次に実行するものの platform で決まる**
 
   | platform | 既定 | 環境変数 |

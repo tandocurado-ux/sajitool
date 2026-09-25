@@ -8,6 +8,8 @@ import {
 } from "@/server/schedules/respread-schema";
 import { TIME_OPTIONS } from "@/lib/parse";
 import { recommendedPerSlot } from "@/lib/intervals";
+import { computeDailyCapacity } from "@/lib/schedule-plan";
+import { CapacityNotice } from "./setup/capacity-notice";
 import { PLATFORM_LABELS, type Platform } from "@/lib/types";
 import { FormError } from "./form-error";
 import { inputClass, labelClass, primaryButtonClass, subtleButtonClass } from "./ui";
@@ -16,6 +18,8 @@ type Props = {
   clientId: string;
   /** この顧客に存在する platform（無いものは選べない）。 */
   platforms: Platform[];
+  /** アカウント全体で登録済みの1日の実行回数（platform 別）。 */
+  existingRunsByPlatform?: Partial<Record<string, number>>;
 };
 
 const MODE_LABELS: Record<RespreadPlatformMode, string> = {
@@ -32,7 +36,9 @@ function label(platform: string): string {
  * 登録済みスケジュールの時刻を撒き直す管理ツール。
  * 必ずドライラン（各枠の件数プレビュー）を出してから適用する。
  */
-export function RespreadTool({ clientId, platforms }: Props) {
+export function RespreadTool({ clientId, platforms, existingRunsByPlatform = {} }: Props) {
+  // 撒き直しは件数を変えないので、登録量 vs 消化能力はそのまま出す。
+  const dailyCapacity = computeDailyCapacity({}, existingRunsByPlatform);
   const [previewState, previewAction, previewing] = useActionState(
     previewRespread,
     initialRespreadState,
@@ -90,6 +96,8 @@ export function RespreadTool({ clientId, platforms }: Props) {
         各スケジュールの1日の実行回数（時刻の数）は変えません。実行履歴（runs）には触れません。
         先にドライランで各枠の件数を確認してから適用してください。
       </p>
+
+      {dailyCapacity.platforms.length > 0 ? <CapacityNotice capacity={dailyCapacity} /> : null}
 
       <form action={previewAction} className="grid gap-3 sm:grid-cols-4 sm:items-end">
         {paramFields}

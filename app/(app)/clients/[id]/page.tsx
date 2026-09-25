@@ -11,6 +11,7 @@ import { AddKeywordForm } from "@/components/add-keyword-form";
 import { AddRegionForm } from "@/components/add-region-form";
 import { AddScheduleForm } from "@/components/add-schedule-form";
 import { RespreadTool } from "@/components/respread-tool";
+import { getDailyRunsByPlatform } from "@/server/schedules/capacity";
 import { ImmediateRunButton, ImmediateRunStatus } from "@/components/immediate-run";
 import { ScheduleToggle } from "@/components/schedule-toggle";
 import { ClientNameEditor } from "@/components/client-name-editor";
@@ -401,6 +402,7 @@ export default async function ClientDetailPage(
             <RespreadTool
               clientId={id}
               platforms={[...new Set(keywords.map((keyword) => keyword.platform))]}
+              existingRunsByPlatform={await getDailyRunsByPlatform()}
             />
           </section>
 

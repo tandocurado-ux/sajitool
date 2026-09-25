@@ -5,6 +5,7 @@ import { listKeywords } from "@/server/keywords/queries";
 import { listRegions } from "@/server/regions/queries";
 import { listSchedulesByKeywordIds } from "@/server/schedules/queries";
 import { BulkSetupForm } from "@/components/bulk-setup-form";
+import { getDailyRunsByPlatform } from "@/server/schedules/capacity";
 import { derivePreviousSettings } from "@/server/setup/schema";
 import { formatTime } from "@/lib/parse";
 
@@ -30,6 +31,8 @@ export default async function ClientSetupPage(
 
   // 既存スケジュールから「前回どう登録したか」を推定して、そのまま使えるようにする。
   const previousSettings = derivePreviousSettings(keywords, schedules);
+  // アカウント全体の登録量（1日の消化能力との比較用）。
+  const existingRunsByPlatform = await getDailyRunsByPlatform();
 
   return (
     <div className="flex flex-col gap-6">
@@ -75,6 +78,7 @@ export default async function ClientSetupPage(
           ].sort(),
         }))}
         previousSettings={previousSettings}
+        existingRunsByPlatform={existingRunsByPlatform}
       />
     </div>
   );
