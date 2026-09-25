@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import sys
 import time
@@ -47,8 +48,80 @@ RETRYABLE_ERRORS = ("search_box_not_found", dev.PROTOCOL_ERROR)
 # BOT の疑いとしてリトライ対象にする。Yahoo! は従来どおり対象外。
 GOOGLE_INDETERMINATE_ERRORS = ("not_searched", "no_results")
 
-# Google のセッション変更リトライ前に空ける秒数（一様乱数。等間隔にしない）。
+# Google の op 間ジッター（ヤマアラシ MEASURE_OP_WAIT 3〜8 秒）。リトライも新しい op なので
+# リトライ前に必ず挟む。一様乱数で等間隔にしない。
 GOOGLE_RETRY_JITTER_SECONDS = (3.0, 8.0)
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0, maximum: int = 20) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"! {name} が整数ではありません（{raw}）。既定の {default} を使います。")
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def google_retry_max() -> int:
+    """Google の BOT 検知／判定不能時の最大リトライ回数（ヤマアラシ MEASURE_RETRY_MAX=3）。"""
+    return _env_int("GOOGLE_RETRY_MAX", 3, minimum=0, maximum=10)
+
+
+def google_retry_delay_seconds() -> float:
+    """リトライ前の待ち（ヤマアラシ PROXYHAT_RETRY_DELAY_MS=1500 に ±50% のジッター）。"""
+    base_ms = _env_int("GOOGLE_RETRY_DELAY_MS", 1500, minimum=0, maximum=60000)
+    return random.uniform(base_ms * 0.5, base_ms * 1.5) / 1000.0
+
+
+def _run_google_with_retries(kwargs: dict, *, keyword: str, use_proxy: bool, allow_retry: bool) -> dev.SearchOutcome:
+    """Google 経路: BOT 検知（/sorry/）または判定不能なら、session を完全に振り直して
+    別 IP プールに移り、最大 google_retry_max() 回までやり直す。
+
+    各リトライの前に op 間ジッター（3〜8 秒）とリトライ遅延（1.5 秒 ±50%）を挟む。
+    1回目の _search は finally で Chrome の停止を確認してから戻るので、
+    同時に2つの Chrome は動かない。
+    """
+    retry_max = google_retry_max() if allow_retry and use_proxy else 0
+    history: list[str] = []
+    outcome = asyncio.run(_search(**kwargs))
+    attempt = 1
+
+    while attempt <= retry_max and should_retry(outcome, "google"):
+        if dev.soax_session_pinned():
+            outcome.note("SOAX_SESSION_ID が固定されているためリトライしません（同じ IP になる）。")
+            break
+
+        reason = outcome.status if outcome.status != "error" else (outcome.error or "error")
+        history.append(f"{attempt}回目 status={outcome.status}" + (f"/{outcome.error}" if outcome.error else "") + f" exit IP {outcome.exit_ip or '-'}")
+
+        # 焼けた session は捨てて別 IP プールへ。
+        new_session = dev.rotate_google_session(keyword)
+        op_wait = random.uniform(*GOOGLE_RETRY_JITTER_SECONDS)
+        delay = google_retry_delay_seconds()
+        print(
+            f"  ! Google: {reason} のためリトライします（{attempt + 1}/{retry_max + 1} 回目、"
+            f"新 session={new_session}、op 間 {op_wait:.1f} 秒 + リトライ遅延 {delay:.2f} 秒）"
+        )
+        time.sleep(op_wait + delay)
+
+        outcome = asyncio.run(_search(**kwargs))
+        attempt += 1
+
+    outcome.attempts = attempt
+    if use_proxy and outcome.status == "blocked":
+        # 最後も /sorry/ なら、その session も焼けたので次回に持ち越さない。
+        dev.rotate_google_session(keyword)
+    if history:
+        outcome.note(
+            "リトライ: " + " → ".join(history)
+            + f" → {attempt}回目 status={outcome.status} exit IP {outcome.exit_ip or '-'}"
+        )
+        if should_retry(outcome, "google"):
+            outcome.note(f"リトライ上限（GOOGLE_RETRY_MAX={retry_max}）に達しました。")
+    return outcome
 
 
 def force_utf8_stdout() -> None:
@@ -220,27 +293,21 @@ def run_search(
         screenshot_path=screenshot_path,
         quiet=quiet,
     )
+
+    if platform == "google":
+        # Google だけ最大 GOOGLE_RETRY_MAX 回（既定 3）のリトライ。
+        # Yahoo! は下の従来どおりの経路（1回だけ）で、挙動は変えない。
+        return _run_google_with_retries(
+            kwargs, keyword=keyword, use_proxy=use_proxy, allow_retry=allow_retry
+        )
+
     outcome = asyncio.run(_search(**kwargs))
 
     if not allow_retry or not use_proxy or not should_retry(outcome, platform):
-        if platform == "google" and use_proxy and outcome.status == "blocked":
-            # リトライしない設定でも、焼けた session は次回に持ち越さない。
-            dev.rotate_google_session(keyword)
         return outcome
     if dev.soax_session_pinned():
         outcome.note("SOAX_SESSION_ID が固定されているためリトライしません（同じ IP になる）。")
         return outcome
-
-    if platform == "google":
-        # BOT 検知（または判定不能）の session は焼けたとみなして完全に振り直し、
-        # 別 IP プールに移ってからリトライする。連射にならないようジッターも入れる。
-        new_session = dev.rotate_google_session(keyword)
-        jitter = random.uniform(*GOOGLE_RETRY_JITTER_SECONDS)
-        print(
-            f"  ! Google: session を振り直しました（新 session={new_session}）。"
-            f"op 間ジッター {jitter:.1f} 秒待ってからリトライします"
-        )
-        time.sleep(jitter)
 
     first_status = outcome.status
     first_error = outcome.error
@@ -255,9 +322,6 @@ def run_search(
     # ここに来た時点で前の Chrome プロセスは終了している（同時に2つは動かさない）。
     retry = asyncio.run(_search(**kwargs))
     retry.attempts = 2
-    if platform == "google" and retry.status == "blocked":
-        # リトライも /sorry/ なら、その session も焼けたので次回に持ち越さない。
-        dev.rotate_google_session(keyword)
     retry.note(
         f"リトライ: 1回目 status={first_status}"
         + (f"/{first_error}" if first_error else "")

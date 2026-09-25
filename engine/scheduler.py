@@ -86,6 +86,14 @@ HISTORY_HOURS = 25
 # 環境変数 GOOGLE_SKIP_LOG で変更できる。
 DEFAULT_GOOGLE_SKIP_LOG = ENGINE_DIR / "skipped_google.jsonl"
 
+# circuit breaker を発動させる Google の連続 blocked 数（既定 3）。
+DEFAULT_GOOGLE_BREAKER_THRESHOLD = 3
+
+
+def google_breaker_threshold() -> int:
+    value = int(_env_float("GOOGLE_BREAKER_THRESHOLD", float(DEFAULT_GOOGLE_BREAKER_THRESHOLD)))
+    return max(1, value)
+
 
 @dataclass(frozen=True)
 class Job:
@@ -264,6 +272,9 @@ class Scheduler:
         # BOT circuit breaker でスキップした Google ジョブ（累計と一覧。後で拾う用）。
         self.google_breaker_skipped = 0
         self.google_skipped: list[Job] = []
+        # Google の連続 blocked 数（リトライを尽くしても blocked だった実行で1カウント）。
+        self.google_consecutive_blocked = 0
+        self.google_breaker_threshold = google_breaker_threshold()
 
         self.started_at: Optional[datetime] = None
         self.last_daily_date: Optional[str] = None
@@ -567,10 +578,21 @@ class Scheduler:
             print(f"  ! runs への記録に失敗しました: {caught}")
             dev.log_exception(caught, context="runs への記録")
 
-        # Google で /sorry/ を掴んだら、その IP/セッションで叩き続けない。
-        # このバッチ（いまキューにある Google のジョブ）は捨てる。Yahoo! は続ける。
-        if job.target.platform == "google" and outcome.status == "blocked":
-            self.trip_google_breaker(run_at)
+        # Google の circuit breaker: リトライを尽くしても blocked だった実行を1カウントとし、
+        # 連続 GOOGLE_BREAKER_THRESHOLD 件（既定 3）で初めてこのバッチの残りをスキップする。
+        # 単発の外れ IP では止めない。blocked 以外の結果でカウントは戻る。Yahoo! は無関係。
+        if job.target.platform == "google":
+            if outcome.status == "blocked":
+                self.google_consecutive_blocked += 1
+                print(
+                    f"  Google 連続 blocked: {self.google_consecutive_blocked}/"
+                    f"{self.google_breaker_threshold}"
+                )
+                if self.google_consecutive_blocked >= self.google_breaker_threshold:
+                    self.trip_google_breaker(run_at)
+                    self.google_consecutive_blocked = 0
+            else:
+                self.google_consecutive_blocked = 0
 
         self.history.append(
             alerts.ExecutionRecord(
@@ -609,8 +631,8 @@ class Scheduler:
         self.record_skipped(now, skipped)
 
         print(
-            f"[{now:%H:%M}] ! Google の BOT 検知（/sorry/）のため、このバッチの残り "
-            f"{len(skipped)} 件（Google）をスキップします。Yahoo! は継続します。"
+            f"[{now:%H:%M}] ! Google の BOT 検知（/sorry/）が {self.google_breaker_threshold} 件続いたため、"
+            f"このバッチの残り {len(skipped)} 件（Google）をスキップします。Yahoo! は継続します。"
         )
         for job in skipped[:MAX_BATCH_LINES]:
             print(f"    skip {job.slot}  {runner.describe_target(job.target)}")
@@ -620,8 +642,8 @@ class Scheduler:
         self.notifier.alert(
             "google_circuit_breaker",
             (
-                f"Google がボット検知（/sorry/）を返したため、このバッチの残り "
-                f"{len(skipped)} 件の Google 計測をスキップしました。"
+                f"Google がボット検知（/sorry/）を {self.google_breaker_threshold} 件連続で返したため、"
+                f"このバッチの残り {len(skipped)} 件の Google 計測をスキップしました。"
                 "次の時刻枠からは通常どおり実行します。"
             ),
             now=now,
@@ -786,6 +808,10 @@ class Scheduler:
         print(
             "  アラート   : "
             + ("webhook へ通知" if self.notifier.enabled else "ログのみ（ALERT_WEBHOOK_URL 未設定）")
+        )
+        print(
+            f"  Google対策 : リトライ最大 {runner.google_retry_max()} 回 / "
+            f"breaker 連続 {self.google_breaker_threshold} 件 blocked で発動"
         )
         print(
             "  即時実行   : "

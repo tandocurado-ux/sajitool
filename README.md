@@ -157,6 +157,19 @@ Yahoo! だけ / 両方）を選び、1枠あたり N 件以内になるよう時
 件数が多い顧客は必ず自動分散を使うこと。全件同じ時刻にすると1つの枠に集中し、
 スケジューラ側で超過分が捨てられる。
 
+### Google の BOT 検知対策（ヤマアラシ準拠・Google 経路のみ）
+
+| 項目 | 値 | 環境変数 |
+| ---- | -- | -------- |
+| リトライ回数（/sorry/・判定不能） | 最大 3 回。毎回 session を完全に振り直して別 IP プールへ | `GOOGLE_RETRY_MAX`（既定 3） |
+| リトライ前の待ち | op 間ジッター 3〜8 秒 ＋ リトライ遅延 1500ms ±50% | `GOOGLE_RETRY_DELAY_MS`（既定 1500） |
+| SOAX の onerror | `onerror-fail` を username に付ける（Yahoo! には付けない） | `SOAX_GOOGLE_ONERROR`（既定 fail。`0` で外す） |
+| circuit breaker | リトライを尽くしても blocked だった実行が **連続 N 件**で、そのバッチの残り Google をスキップ | `GOOGLE_BREAKER_THRESHOLD`（既定 3） |
+| session | 同一キーワードで固定、IP の切替は `rotate-timed_300` に任せる | `SOAX_GOOGLE_ROTATE_SECONDS` |
+| プール / region | `network-mob`、region 省略 | `SOAX_GOOGLE_NETWORK` / `SOAX_GOOGLE_OMIT_REGION` |
+
+Yahoo! のフロー・username・リトライ（1回）は従来どおりで変えていない。
+
 ### 即時計測（今すぐ1件）
 
 スケジュールの時刻枠を待たずに1件だけ撃って結果を確かめられる（検証用）。

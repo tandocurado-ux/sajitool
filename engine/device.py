@@ -341,7 +341,10 @@ def resolve_device(device: str) -> DeviceProfile:
 #
 # 注意（実測で確定済み）:
 #   - session の値は英数字のみ。ハイフン等が入るとトークン区切りと解釈されて壊れる
-#   - onerror トークンは付けない（onerror-rotate は無効で 400 になる）
+#   - onerror トークンは Google だけ onerror-fail を付ける（ヤマアラシの本番必須値。
+#     未指定=default rotate だと SOAX 側で invalid 扱いになる実測）。
+#     onerror-rotate は 400 になるので使わない。SOAX_GOOGLE_ONERROR で切替可、
+#     Yahoo! には付けない（従来どおり）
 #   - region は英語小文字（osaka, aichi ...）
 #   - network は res（住宅）/ mob（モバイル）。契約パッケージで両方有効なら
 #     Google だけ mob に逃がせる（SOAX_GOOGLE_NETWORK）
@@ -408,7 +411,7 @@ class ProxyConfig:
     platform: str = ""
 
 
-SOAX_USERNAME_KEYS = ("country", "region", "network", "rotate", "session")
+SOAX_USERNAME_KEYS = ("country", "region", "network", "rotate", "onerror", "session")
 
 
 def describe_proxy(proxy: "ProxyConfig") -> str:
@@ -437,6 +440,7 @@ def describe_proxy(proxy: "ProxyConfig") -> str:
         f"network={fields.get('network') or '-'} "
         f"region={fields.get('region') or '省略'} "
         f"rotate={fields.get('rotate') or '-'} "
+        f"onerror={fields.get('onerror') or 'なし'} "
         f"country={fields.get('country') or '-'} "
         f"username={masked_username}"
     )
@@ -488,11 +492,13 @@ def build_soax_username(
     network: str,
     rotate_seconds: str,
     session_id: str,
+    onerror: Optional[str] = None,
 ) -> str:
     """SOAX のユーザー名（オプション文字列）を組み立てる。
 
     トークンの区切りは "-" 固定。値に "-" を含められないので、
     session は呼び出し前にサニタイズしておくこと。
+    onerror は Google だけ "fail" を渡す（Yahoo! は None のまま＝従来どおり）。
     """
     parts: list[str] = []
     if country:
@@ -504,9 +510,24 @@ def build_soax_username(
     if rotate_seconds:
         # rotate-timed_300 で「300秒ごとにローテート」。
         parts += ["rotate", f"timed_{rotate_seconds}"]
+    if onerror:
+        # onerror-fail: 割り当て失敗時にローテートせず失敗として返す（ヤマアラシ準拠）。
+        parts += ["onerror", onerror]
     if session_id:
         parts += ["session", session_id]
     return "-".join(parts)
+
+
+# Google 経路で SOAX に付ける onerror トークン。ヤマアラシは fail を本番必須としている。
+# SOAX が 400 を返すなら SOAX_GOOGLE_ONERROR=0（または none）で外せる（保険）。
+SOAX_GOOGLE_ONERROR_DEFAULT = "fail"
+
+
+def google_onerror_token() -> Optional[str]:
+    raw = os.environ.get("SOAX_GOOGLE_ONERROR", SOAX_GOOGLE_ONERROR_DEFAULT).strip().lower()
+    if raw in ("", "0", "none", "off", "false", "no"):
+        return None
+    return sanitize_session_id(raw) or None
 
 
 def soax_session_pinned() -> bool:
@@ -590,6 +611,9 @@ def build_proxy_config(
         if google_rotate:
             rotate_seconds = google_rotate
 
+    # onerror は Google だけ（Yahoo! の username は従来どおり変えない）。
+    onerror = google_onerror_token() if platform == "google" else None
+
     pinned = os.environ.get("SOAX_SESSION_ID", "").strip()
     if pinned:
         session_id = sanitize_session_id(pinned)
@@ -610,6 +634,7 @@ def build_proxy_config(
             network=network,
             rotate_seconds=rotate_seconds,
             session_id=session_id,
+            onerror=onerror,
         ),
         password=password,
         session_id=session_id,
