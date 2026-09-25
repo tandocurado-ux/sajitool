@@ -395,6 +395,10 @@ export type BulkSetupState = {
   summary: BulkSetupSummary | null;
   /** 途中で失敗したとき、どこまで作られたかを伝える。 */
   progress: string | null;
+  /** 「登録して今すぐ1件テスト実行」で積んだ即時実行の依頼 id。 */
+  immediateRequestId: string | null;
+  /** 即時実行の登録だけ失敗したとき（登録自体は成功）。 */
+  immediateError: string | null;
 };
 
 export const initialBulkSetupState: BulkSetupState = {
@@ -402,7 +406,14 @@ export const initialBulkSetupState: BulkSetupState = {
   warnings: [],
   summary: null,
   progress: null,
+  immediateRequestId: null,
+  immediateError: null,
 };
+
+/** 「登録して今すぐ1件テスト実行」ボタンで送信されたか。 */
+export function wantsImmediateTest(formData: FormData): boolean {
+  return String(formData.get("immediate_test") ?? "") === "1";
+}
 
 // --------------------------------------------------------------------------
 // 既存スケジュールからの設定の引き継ぎ

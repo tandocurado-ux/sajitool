@@ -7,7 +7,8 @@ import { getUserFrom } from "@/server/auth/queries";
 import { parseId } from "@/lib/parse";
 import type { ActionState } from "@/lib/action-state";
 import { applyBulkSetup } from "@/server/setup/apply";
-import { parseNewClientSetup } from "@/server/setup/schema";
+import { parseNewClientSetup, wantsImmediateTest } from "@/server/setup/schema";
+import { enqueueImmediateRun, findFirstScheduleId } from "@/server/immediate/queue";
 import {
   initialNewClientState,
   parseClientRename,
@@ -43,8 +44,10 @@ export async function createClientWithSetup(
   const clientId = String(created.data[0].id);
 
   // キーワードも地域も無ければ顧客だけ作って終わり（あとから追加できる）。
+  let immediateRequestId: string | null = null;
   if (setup) {
-    const result = await applyBulkSetup(supabase, { ...setup, client_id: clientId });
+    const input = { ...setup, client_id: clientId };
+    const result = await applyBulkSetup(supabase, input);
     if (!result.ok) {
       revalidatePath("/clients");
       revalidatePath(`/clients/${clientId}`);
@@ -56,11 +59,24 @@ export async function createClientWithSetup(
         createdClientId: clientId,
       };
     }
+    // 「登録して今すぐ1件テスト実行」: 先頭の組み合わせを1件だけ積み、
+    // 顧客詳細のスケジュールタブで進捗を見せる。
+    if (wantsImmediateTest(formData)) {
+      const scheduleId = await findFirstScheduleId(input);
+      if (scheduleId) {
+        const queued = await enqueueImmediateRun(supabase, scheduleId);
+        if (queued.ok) immediateRequestId = queued.requestId;
+      }
+    }
   }
 
   revalidatePath("/clients");
   revalidatePath(`/clients/${clientId}`);
-  redirect(`/clients/${clientId}`);
+  redirect(
+    immediateRequestId
+      ? `/clients/${clientId}?tab=schedules&immediate=${immediateRequestId}`
+      : `/clients/${clientId}`,
+  );
 }
 
 export async function removeClient(

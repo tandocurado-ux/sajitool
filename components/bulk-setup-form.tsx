@@ -16,6 +16,7 @@ import { parseKeywordLines } from "@/lib/parse";
 import { computeSchedulePlan, type SpreadSuggestion } from "@/lib/schedule-plan";
 import type { Keyword, Region } from "@/lib/types";
 import { FormError } from "./form-error";
+import { ImmediateRunStatus } from "./immediate-run";
 import { isRegionDraftFilled, type RegionDraft } from "./region-picker";
 import { DeviceModeField } from "./setup/device-mode-field";
 import { PlatformModeField } from "./setup/platform-mode-field";
@@ -483,7 +484,7 @@ export function BulkSetupForm({
           onApplySuggestion={applySuggestion}
         />
 
-        <div className="mt-4">
+        <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
             type="submit"
             disabled={pending || !canSubmit}
@@ -491,7 +492,30 @@ export function BulkSetupForm({
           >
             {pending ? "登録中…" : `${toCreate} 件のスケジュールを作成`}
           </button>
+          <button
+            type="submit"
+            name="immediate_test"
+            value="1"
+            disabled={pending || !canSubmit}
+            className={subtleButtonClass}
+            title="登録後、先頭のキーワード × 地域 × デバイスを1件だけ今すぐ実行します"
+          >
+            登録して今すぐ1件テスト実行
+          </button>
         </div>
+        {state.immediateError ? (
+          <p className="mt-2 text-xs text-warn">
+            登録は完了しましたが、テスト実行を積めませんでした: {state.immediateError}
+          </p>
+        ) : null}
+        {state.immediateRequestId ? (
+          <div className="mt-3 rounded-md border border-line bg-inset px-3 py-2">
+            <p className="text-xs font-medium text-muted">テスト実行（先頭の1件）</p>
+            <div className="mt-1">
+              <ImmediateRunStatus key={state.immediateRequestId} requestId={state.immediateRequestId} />
+            </div>
+          </div>
+        ) : null}
 
         <FormError message={state.error} />
         {state.progress ? (

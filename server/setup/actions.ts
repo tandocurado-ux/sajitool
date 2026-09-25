@@ -4,10 +4,12 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getUserFrom } from "@/server/auth/queries";
 import { isClientOwned } from "@/server/clients/queries";
+import { enqueueImmediateRun, findFirstScheduleId } from "@/server/immediate/queue";
 import { applyBulkSetup } from "./apply";
 import {
   initialBulkSetupState,
   parseBulkSetupInput,
+  wantsImmediateTest,
   type BulkSetupState,
 } from "./schema";
 
@@ -36,11 +38,37 @@ export async function bulkCreateSchedules(
 
   const result = await applyBulkSetup(supabase, input);
   if (!result.ok) {
-    return { error: result.error, warnings, summary: null, progress: result.progress };
+    return {
+      ...initialBulkSetupState,
+      error: result.error,
+      warnings,
+      progress: result.progress,
+    };
   }
 
   revalidatePath(`/clients/${input.client_id}`);
   revalidatePath(`/clients/${input.client_id}/setup`);
 
-  return { error: null, warnings, summary: result.summary, progress: null };
+  // 「登録して今すぐ1件テスト実行」: 先頭のキーワード × 地域 × デバイスを1件だけ積む。
+  let immediateRequestId: string | null = null;
+  let immediateError: string | null = null;
+  if (wantsImmediateTest(formData)) {
+    const scheduleId = await findFirstScheduleId(input);
+    if (!scheduleId) {
+      immediateError = "テスト実行するスケジュールが見つかりませんでした。";
+    } else {
+      const queued = await enqueueImmediateRun(supabase, scheduleId);
+      if (queued.ok) immediateRequestId = queued.requestId;
+      else immediateError = queued.error;
+    }
+  }
+
+  return {
+    error: null,
+    warnings,
+    summary: result.summary,
+    progress: null,
+    immediateRequestId,
+    immediateError,
+  };
 }

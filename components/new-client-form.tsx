@@ -25,7 +25,7 @@ import {
   isTimingReady,
   type TimingValue,
 } from "./setup/schedule-timing-fields";
-import { cardClass, inputClass, labelClass, primaryButtonClass } from "./ui";
+import { cardClass, inputClass, labelClass, primaryButtonClass, subtleButtonClass } from "./ui";
 
 export function NewClientForm() {
   const [state, formAction, pending] = useActionState(
@@ -236,7 +236,7 @@ export function NewClientForm() {
           </>
         )}
 
-        <div className="mt-4">
+        <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
             type="submit"
             disabled={pending || !canSubmit}
@@ -244,6 +244,18 @@ export function NewClientForm() {
           >
             {pending ? "登録中…" : "登録する"}
           </button>
+          {toCreate > 0 ? (
+            <button
+              type="submit"
+              name="immediate_test"
+              value="1"
+              disabled={pending || !canSubmit}
+              className={subtleButtonClass}
+              title="登録後、先頭のキーワード × 検索地点 × デバイスを1件だけ今すぐ実行し、顧客ページで結果を表示します"
+            >
+              登録して今すぐ1件テスト実行
+            </button>
+          ) : null}
         </div>
 
         <FormError message={state.error} />

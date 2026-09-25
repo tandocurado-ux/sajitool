@@ -38,6 +38,7 @@ sys.path.insert(0, str(ENGINE_DIR))
 
 import alerts  # noqa: E402
 import device as dev  # noqa: E402
+import immediate  # noqa: E402
 import runner  # noqa: E402
 from db import (  # noqa: E402
     DatabaseError,
@@ -272,6 +273,8 @@ class Scheduler:
 
         self.stopping = False
         self.next_allowed_at = 0.0  # time.monotonic() ベース
+        # 即時実行キューを次に確認する時刻（time.monotonic() ベース）。
+        self.next_immediate_check = 0.0
         # どの分まで見たか。起動前の枠を積まないための基準。
         self.last_scanned_minute: Optional[datetime] = None
         self.last_loop_minute: Optional[str] = None
@@ -784,6 +787,14 @@ class Scheduler:
             "  アラート   : "
             + ("webhook へ通知" if self.notifier.enabled else "ログのみ（ALERT_WEBHOOK_URL 未設定）")
         )
+        print(
+            "  即時実行   : "
+            + (
+                f"{immediate.POLL_SECONDS:.0f} 秒ごとに依頼を確認（定時より優先）"
+                if immediate.enabled()
+                else "無効（IMMEDIATE_RUNS_ENABLED=0）"
+            )
+        )
         if restored > 0:
             print(
                 f"  当日実行済み: {restored} 件（runs から復元。この枠は再実行しません）"
@@ -812,6 +823,19 @@ class Scheduler:
                 self.last_loop_minute = minute
                 self.refresh(now)
                 self.enqueue_due(now)
+
+            # 即時計測の依頼は定時のキューより先に拾う。定時のキュー・done・
+            # circuit breaker には関与しない（単発なので）。
+            if time.monotonic() >= self.next_immediate_check:
+                self.next_immediate_check = time.monotonic() + immediate.POLL_SECONDS
+                try:
+                    immediate.process_immediate_requests(
+                        self.sb, use_proxy=self.use_proxy, headless=self.headless
+                    )
+                except Exception as caught:  # noqa: BLE001 - 即時実行の失敗で常駐を止めない
+                    dev.log_exception(caught, context="即時実行キューの処理")
+                if self.stopping:
+                    break
 
             self.maybe_hourly_summary(now)
             self.maybe_daily_summary(now)

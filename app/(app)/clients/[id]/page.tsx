@@ -11,6 +11,7 @@ import { AddKeywordForm } from "@/components/add-keyword-form";
 import { AddRegionForm } from "@/components/add-region-form";
 import { AddScheduleForm } from "@/components/add-schedule-form";
 import { RespreadTool } from "@/components/respread-tool";
+import { ImmediateRunButton, ImmediateRunStatus } from "@/components/immediate-run";
 import { ScheduleToggle } from "@/components/schedule-toggle";
 import { ClientNameEditor } from "@/components/client-name-editor";
 import { DeleteButton } from "@/components/delete-button";
@@ -82,6 +83,11 @@ export default async function ClientDetailPage(
   const { id } = await props.params;
   const searchParams = await props.searchParams;
   const activeTab = normalizeTab(searchParams.tab);
+  const immediateParam = searchParams.immediate;
+  const immediateRequestId =
+    typeof immediateParam === "string" && /^[0-9a-f-]{8,64}$/i.test(immediateParam)
+      ? immediateParam
+      : null;
   const platformFilter = normalizePlatform(searchParams.platform);
   const deviceFilter = normalizeDevice(searchParams.device);
 
@@ -372,6 +378,15 @@ export default async function ClientDetailPage(
 
       {activeTab === "schedules" ? (
         <>
+          {immediateRequestId ? (
+            <section className={cardClass}>
+              <h2 className="mb-2 text-sm font-semibold tracking-tight text-fg">
+                テスト実行（登録した先頭の1件）
+              </h2>
+              <ImmediateRunStatus key={immediateRequestId} requestId={immediateRequestId} />
+            </section>
+          ) : null}
+
           <section className={cardClass}>
             <h2 className="mb-3 text-sm font-semibold tracking-tight text-fg">
               スケジュールを追加
@@ -430,7 +445,8 @@ export default async function ClientDetailPage(
                           </span>
                         </p>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-start gap-2">
+                        <ImmediateRunButton scheduleId={schedule.id} />
                         <ScheduleToggle
                           scheduleId={schedule.id}
                           clientId={id}
