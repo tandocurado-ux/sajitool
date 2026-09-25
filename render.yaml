@@ -4,7 +4,7 @@ services:
   - type: worker
     name: sajitool-engine
     runtime: docker
-    plan: starter
+    plan: standard
     region: singapore
     dockerfilePath: ./engine/Dockerfile
     dockerContext: .
