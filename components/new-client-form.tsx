@@ -10,7 +10,7 @@ import {
   type DeviceMode,
   type PlatformMode,
 } from "@/server/setup/schema";
-import { computeSchedulePlan } from "@/lib/schedule-plan";
+import { computeSchedulePlan, type SpreadSuggestion } from "@/lib/schedule-plan";
 import { FormError } from "./form-error";
 import { isRegionDraftFilled, type RegionDraft } from "./region-picker";
 import { DeviceModeField } from "./setup/device-mode-field";
@@ -19,8 +19,8 @@ import { PlatformModeField } from "./setup/platform-mode-field";
 import { RegionDraftList } from "./setup/region-draft-list";
 import { SchedulePreview } from "./setup/schedule-preview";
 import {
-  DEFAULT_TIMING,
   ScheduleTimingFields,
+  defaultTimingFor,
   describeTiming,
   isTimingReady,
   type TimingValue,
@@ -37,7 +37,10 @@ export function NewClientForm() {
   const [keywords, setKeywords] = useState<string[]>([]);
   const [platformMode, setPlatformMode] = useState<PlatformMode>("google");
   const [regionDrafts, setRegionDrafts] = useState<RegionDraft[]>([]);
-  const [timing, setTiming] = useState<TimingValue>(DEFAULT_TIMING);
+  // 新規登録の既定は Google なので、時刻は自動分散が既定になる。
+  const [timing, setTiming] = useState<TimingValue>(() =>
+    defaultTimingFor(platformsFor("google")),
+  );
   const [deviceMode, setDeviceMode] = useState<DeviceMode>("pc");
 
   const platforms = platformsFor(platformMode);
@@ -48,10 +51,23 @@ export function NewClientForm() {
   const toCreate =
     keywords.length * platforms.length * filledRegions.length * devices.length;
 
+  // 新規顧客は platform ごとの件数が等しい。
+  const toCreateByPlatform = useMemo(
+    () =>
+      Object.fromEntries(
+        platforms.map((platform) => [
+          platform,
+          keywords.length * filledRegions.length * devices.length,
+        ]),
+      ),
+    [platforms, keywords.length, filledRegions.length, devices.length],
+  );
+
   const plan = useMemo(
     () =>
       computeSchedulePlan({
         toCreate,
+        toCreateByPlatform,
         timeMode: timing.timeMode,
         times: timing.times,
         spreadStart: timing.spreadStart,
@@ -59,8 +75,20 @@ export function NewClientForm() {
         rotations: timing.rotations,
         platforms,
       }),
-    [toCreate, timing, platforms],
+    [toCreate, toCreateByPlatform, timing, platforms],
   );
+
+  const recommendSpread = platforms.includes("google");
+
+  function applySuggestion(suggestion: SpreadSuggestion) {
+    setTiming((current) => ({
+      ...current,
+      timeMode: "spread",
+      spreadStart: suggestion.spreadStart,
+      spreadEnd: suggestion.spreadEnd,
+      rotations: suggestion.rotations,
+    }));
+  }
 
   const nameReady = name.trim() !== "";
   const scheduleReady = toCreate === 0 || isTimingReady(timing);
@@ -85,7 +113,14 @@ export function NewClientForm() {
         `= スケジュール ${toCreate} 件`,
         describeTiming(timing),
         `1枠あたり最大 ${plan.perSlot} 件、消化見込み 約 ${Math.round(plan.drainSeconds / 60)} 分`,
+        ...plan.platformLoads.map(
+          (load) =>
+            `${load.platform}: 1枠あたり最大 ${load.perSlot} 件（推奨 ${load.recommended} 件以下）${load.over ? " ⚠ 推奨超過" : ""}`,
+        ),
       );
+      if (plan.overRecommended) {
+        lines.push("", "⚠ 1枠あたりの件数が推奨上限を超えています。自動分散で散らすことを推奨します。");
+      }
       if (plan.overCapacity) {
         lines.push(
           "",
@@ -161,7 +196,11 @@ export function NewClientForm() {
       <section className={cardClass}>
         <h2 className="mb-3 text-sm font-semibold tracking-tight text-fg">4. 検索時間</h2>
 
-        <ScheduleTimingFields value={timing} onChange={updateTiming} />
+        <ScheduleTimingFields
+          value={timing}
+          onChange={updateTiming}
+          recommendSpread={recommendSpread}
+        />
 
         <div className="mt-4">
           <DeviceModeField value={deviceMode} onChange={setDeviceMode} />
@@ -189,7 +228,11 @@ export function NewClientForm() {
               のスケジュールを作成します。
             </p>
             <p className="mt-1 text-sm text-subtle">{describeTiming(timing)}</p>
-            <SchedulePreview plan={plan} toCreate={toCreate} />
+            <SchedulePreview
+              plan={plan}
+              toCreate={toCreate}
+              onApplySuggestion={applySuggestion}
+            />
           </>
         )}
 

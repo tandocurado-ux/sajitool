@@ -13,7 +13,7 @@ import {
   type PreviousSettings,
 } from "@/server/setup/schema";
 import { parseKeywordLines } from "@/lib/parse";
-import { computeSchedulePlan } from "@/lib/schedule-plan";
+import { computeSchedulePlan, type SpreadSuggestion } from "@/lib/schedule-plan";
 import type { Keyword, Region } from "@/lib/types";
 import { FormError } from "./form-error";
 import { isRegionDraftFilled, type RegionDraft } from "./region-picker";
@@ -23,6 +23,7 @@ import { RegionDraftList } from "./setup/region-draft-list";
 import { SchedulePreview } from "./setup/schedule-preview";
 import {
   ScheduleTimingFields,
+  defaultTimingFor,
   describeTiming,
   isTimingReady,
   type TimingValue,
@@ -43,10 +44,17 @@ type Props = {
 
 const SEP = "\u0000";
 
-/** 推定した前回設定をフォームの時刻設定に変換する。 */
-function timingFrom(previous: PreviousSettings | null): TimingValue {
+/**
+ * 推定した前回設定をフォームの時刻設定に変換する。
+ * 前回設定が無ければ、Google を含む登録は自動分散を既定にする。
+ */
+function timingFrom(
+  previous: PreviousSettings | null,
+  platforms: readonly string[] = [],
+): TimingValue {
+  if (!previous) return defaultTimingFor(platforms);
   return {
-    timeMode: previous?.timeMode ?? "fixed",
+    timeMode: previous.timeMode,
     times:
       previous?.timeMode === "fixed" && previous.times.length > 0
         ? previous.times
@@ -96,7 +104,9 @@ export function BulkSetupForm({
     regions.map((region) => region.id),
   );
   const [newRegions, setNewRegions] = useState<RegionDraft[]>([]);
-  const [timing, setTiming] = useState<TimingValue>(() => timingFrom(previousSettings));
+  const [timing, setTiming] = useState<TimingValue>(() =>
+    timingFrom(previousSettings, platformsFor(previousSettings?.platformMode ?? "google")),
+  );
   const [deviceMode, setDeviceMode] = useState<DeviceMode>(
     previousSettings?.deviceMode ?? "pc",
   );
@@ -135,27 +145,31 @@ export function BulkSetupForm({
   const devices = devicesFor(deviceMode);
   const filledNewRegions = newRegions.filter(isRegionDraftFilled);
 
-  /** 実際に作られる件数と、既存のためスキップされる件数を数える。 */
-  const { toCreate, toSkip } = useMemo(() => {
+  /** 実際に作られる件数と、既存のためスキップされる件数を数える（platform 別も持つ）。 */
+  const { toCreate, toSkip, toCreateByPlatform } = useMemo(() => {
     let create = 0;
     let skip = 0;
+    const byPlatform: Record<string, number> = {};
     for (const keyword of keywords) {
       for (const platform of platforms) {
         const keywordId = keywordIdByKey.get(`${keyword}${SEP}${platform}`);
+        let created = 0;
         for (const regionId of selectedRegionIds) {
           for (const device of devices) {
             const known =
               keywordId !== undefined &&
               scheduleKeySet.has(`${keywordId}|${regionId}|${device}`);
             if (known) skip += 1;
-            else create += 1;
+            else created += 1;
           }
         }
         // 新規地域はまだ存在しないので必ず新規作成になる。
-        create += filledNewRegions.length * devices.length;
+        created += filledNewRegions.length * devices.length;
+        create += created;
+        byPlatform[platform] = (byPlatform[platform] ?? 0) + created;
       }
     }
-    return { toCreate: create, toSkip: skip };
+    return { toCreate: create, toSkip: skip, toCreateByPlatform: byPlatform };
   }, [
     keywords,
     platforms,
@@ -171,6 +185,7 @@ export function BulkSetupForm({
     () =>
       computeSchedulePlan({
         toCreate,
+        toCreateByPlatform,
         timeMode: timing.timeMode,
         times: timing.times,
         spreadStart: timing.spreadStart,
@@ -178,8 +193,20 @@ export function BulkSetupForm({
         rotations: timing.rotations,
         platforms,
       }),
-    [toCreate, timing, platforms],
+    [toCreate, toCreateByPlatform, timing, platforms],
   );
+
+  const recommendSpread = platforms.includes("google");
+
+  function applySuggestion(suggestion: SpreadSuggestion) {
+    setTiming((current) => ({
+      ...current,
+      timeMode: "spread",
+      spreadStart: suggestion.spreadStart,
+      spreadEnd: suggestion.spreadEnd,
+      rotations: suggestion.rotations,
+    }));
+  }
 
   const regionCount = selectedRegionIds.length + filledNewRegions.length;
   const canSubmit =
@@ -199,7 +226,14 @@ export function BulkSetupForm({
       `キーワード ${keywords.length} 件 × 検索エンジン ${platforms.length} × 地域 ${regionCount} 件 × デバイス ${devices.length}`,
       describeTiming(timing),
       `1枠あたり最大 ${plan.perSlot} 件、消化見込み 約 ${Math.round(plan.drainSeconds / 60)} 分`,
+      ...plan.platformLoads.map(
+        (load) =>
+          `${load.platform}: 1枠あたり最大 ${load.perSlot} 件（推奨 ${load.recommended} 件以下）${load.over ? " ⚠ 推奨超過" : ""}`,
+      ),
     ];
+    if (plan.overRecommended) {
+      lines.push("", "⚠ 1枠あたりの件数が推奨上限を超えています。自動分散で散らすことを推奨します。");
+    }
     if (plan.overCapacity) {
       lines.push("", "⚠ 1枠(60分)で消化しきれません。次の枠に食い込み、超過分は実行されません。");
     }
@@ -414,7 +448,11 @@ export function BulkSetupForm({
           3. スケジュール設定
         </h2>
 
-        <ScheduleTimingFields value={timing} onChange={updateTiming} />
+        <ScheduleTimingFields
+          value={timing}
+          onChange={updateTiming}
+          recommendSpread={recommendSpread}
+        />
 
         <div className="mt-4">
           <DeviceModeField value={deviceMode} onChange={setDeviceMode} />
@@ -442,6 +480,7 @@ export function BulkSetupForm({
           toCreate={toCreate}
           toSkip={toSkip}
           existingScheduleCount={existingScheduleKeys.length}
+          onApplySuggestion={applySuggestion}
         />
 
         <div className="mt-4">

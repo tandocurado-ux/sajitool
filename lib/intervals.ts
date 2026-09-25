@@ -28,3 +28,31 @@ export function averageIntervalFor(platforms: readonly string[]): number {
   );
   return total / platforms.length;
 }
+
+function envPositiveInt(raw: string | undefined, fallback: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+/**
+ * 1つの時刻枠（60分）に入れてよい件数の推奨上限（platform 別）。
+ *
+ * 消化できる上限（枠 ÷ 平均間隔。Google は 60〜180 秒間隔で約 20〜60 件）ではなく
+ * 「安全に回せる」目安。Google は検知リスクがあるので 1枠あたり少なめ（既定 4 件）、
+ * Yahoo! は検知されないので多めに置く。
+ * 環境変数（NEXT_PUBLIC_GOOGLE_SLOT_MAX / NEXT_PUBLIC_YAHOO_SLOT_MAX）で変えられる。
+ */
+export const PLATFORM_SLOT_RECOMMENDED_MAX: Record<string, number> = {
+  google: envPositiveInt(process.env.NEXT_PUBLIC_GOOGLE_SLOT_MAX, 4),
+  yahoo: envPositiveInt(process.env.NEXT_PUBLIC_YAHOO_SLOT_MAX, 60),
+};
+
+/** platform の推奨上限。未定義の platform は消化上限の半分を目安にする。 */
+export function recommendedPerSlot(platform: string): number {
+  const configured = PLATFORM_SLOT_RECOMMENDED_MAX[platform];
+  if (configured) return configured;
+  return Math.max(
+    1,
+    Math.floor(SLOT_CAPACITY_SECONDS / averageIntervalSeconds(platform) / 2),
+  );
+}

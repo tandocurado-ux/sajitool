@@ -26,6 +26,13 @@ export const DEFAULT_TIMING: TimingValue = {
   rotations: 1,
 };
 
+/** Google を含む登録は1枠集中を避けるため、時刻の自動分散を既定にする。 */
+export function defaultTimingFor(platforms: readonly string[]): TimingValue {
+  return platforms.includes("google")
+    ? { ...DEFAULT_TIMING, timeMode: "spread" }
+    : DEFAULT_TIMING;
+}
+
 export function timingSlots(value: TimingValue): string[] {
   return timeSlotsBetween(value.spreadStart, value.spreadEnd);
 }
@@ -51,13 +58,15 @@ export function describeTiming(value: TimingValue): string {
 type Props = {
   value: TimingValue;
   onChange: (patch: Partial<TimingValue>) => void;
+  /** Google を含む登録なら true。自動分散を推奨として示す。 */
+  recommendSpread?: boolean;
 };
 
 /**
  * 時刻の決め方（全件同じ / 時間帯に自動分散）とデバイス以外の時刻設定。
  * まとめて登録と新規登録で共有する。
  */
-export function ScheduleTimingFields({ value, onChange }: Props) {
+export function ScheduleTimingFields({ value, onChange, recommendSpread = false }: Props) {
   const slots = timingSlots(value);
 
   return (
@@ -75,9 +84,20 @@ export function ScheduleTimingFields({ value, onChange }: Props) {
                 onChange={() => onChange({ timeMode: mode })}
               />
               {TIME_MODE_LABELS[mode]}
+              {recommendSpread && mode === "spread" ? (
+                <span className="rounded-md border border-ok-line bg-ok-soft px-1.5 py-0.5 text-xs font-medium text-ok">
+                  推奨
+                </span>
+              ) : null}
             </label>
           ))}
         </div>
+        {recommendSpread && value.timeMode === "fixed" ? (
+          <p className="mt-1 text-xs font-medium text-warn">
+            Google を含む登録は、全件同じ時刻にすると1枠に集中してボット検知と
+            キュー溢れの原因になります。「時間帯に自動分散」を推奨します。
+          </p>
+        ) : null}
       </fieldset>
 
       <div className="mt-4">

@@ -10,6 +10,7 @@ import { removeSchedule } from "@/server/schedules/actions";
 import { AddKeywordForm } from "@/components/add-keyword-form";
 import { AddRegionForm } from "@/components/add-region-form";
 import { AddScheduleForm } from "@/components/add-schedule-form";
+import { RespreadTool } from "@/components/respread-tool";
 import { ScheduleToggle } from "@/components/schedule-toggle";
 import { ClientNameEditor } from "@/components/client-name-editor";
 import { DeleteButton } from "@/components/delete-button";
@@ -376,6 +377,16 @@ export default async function ClientDetailPage(
               スケジュールを追加
             </h2>
             <AddScheduleForm keywords={keywords} regions={regions} />
+          </section>
+
+          <section className={cardClass}>
+            <h2 className="mb-1 text-sm font-semibold tracking-tight text-fg">
+              時刻を撒き直す（再分散）
+            </h2>
+            <RespreadTool
+              clientId={id}
+              platforms={[...new Set(keywords.map((keyword) => keyword.platform))]}
+            />
           </section>
 
           <section className={cardClass}>
