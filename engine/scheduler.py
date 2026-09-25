@@ -19,6 +19,7 @@ runner.py 経由でそのまま呼ぶ。検索レシピ自体には一切手を�
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import signal
@@ -79,6 +80,10 @@ MAX_BATCH_LINES = 10
 
 # アラート判定のためにメモリへ残す実行履歴の長さ。
 HISTORY_HOURS = 25
+
+# Google の BOT circuit breaker でスキップしたペアの記録先（JSONL）。
+# 環境変数 GOOGLE_SKIP_LOG で変更できる。
+DEFAULT_GOOGLE_SKIP_LOG = ENGINE_DIR / "skipped_google.jsonl"
 
 
 @dataclass(frozen=True)
@@ -255,6 +260,9 @@ class Scheduler:
         self.history: list[alerts.ExecutionRecord] = []
         self.consecutive_errors: dict[str, int] = {}
         self.notifier = alerts.Notifier(os.environ.get("ALERT_WEBHOOK_URL"))
+        # BOT circuit breaker でスキップした Google ジョブ（累計と一覧。後で拾う用）。
+        self.google_breaker_skipped = 0
+        self.google_skipped: list[Job] = []
 
         self.started_at: Optional[datetime] = None
         self.last_daily_date: Optional[str] = None
@@ -556,6 +564,11 @@ class Scheduler:
             print(f"  ! runs への記録に失敗しました: {caught}")
             dev.log_exception(caught, context="runs への記録")
 
+        # Google で /sorry/ を掴んだら、その IP/セッションで叩き続けない。
+        # このバッチ（いまキューにある Google のジョブ）は捨てる。Yahoo! は続ける。
+        if job.target.platform == "google" and outcome.status == "blocked":
+            self.trip_google_breaker(run_at)
+
         self.history.append(
             alerts.ExecutionRecord(
                 at=run_at,
@@ -570,6 +583,75 @@ class Scheduler:
             )
         else:
             self.consecutive_errors.pop(job.target.schedule_id, None)
+
+    # ------------------------------------------------------------------
+    # BOT circuit breaker（Google のみ）
+    # ------------------------------------------------------------------
+
+    def trip_google_breaker(self, now: datetime) -> int:
+        """キューに残っている Google のジョブをスキップする。
+
+        1件で /sorry/ を掴んだ直後に同じ密度で叩き続けると検知が固定化するため、
+        このバッチの残りは実行しない（積んだ時点で done 扱いなので当日の再実行も
+        しない）。Yahoo! のジョブはそのまま残す。
+        """
+        skipped = [job for job in self.queue if job.target.platform == "google"]
+        if not skipped:
+            return 0
+        self.queue = [job for job in self.queue if job.target.platform != "google"]
+        self.google_breaker_skipped += len(skipped)
+        # スキップしたペアは後で拾えるよう、メモリと JSONL の両方に残す
+        # （runs には書かない＝スキーマは変えない）。
+        self.google_skipped.extend(skipped)
+        self.record_skipped(now, skipped)
+
+        print(
+            f"[{now:%H:%M}] ! Google の BOT 検知（/sorry/）のため、このバッチの残り "
+            f"{len(skipped)} 件（Google）をスキップします。Yahoo! は継続します。"
+        )
+        for job in skipped[:MAX_BATCH_LINES]:
+            print(f"    skip {job.slot}  {runner.describe_target(job.target)}")
+        if len(skipped) > MAX_BATCH_LINES:
+            print(f"    … 他 {len(skipped) - MAX_BATCH_LINES} 件")
+
+        self.notifier.alert(
+            "google_circuit_breaker",
+            (
+                f"Google がボット検知（/sorry/）を返したため、このバッチの残り "
+                f"{len(skipped)} 件の Google 計測をスキップしました。"
+                "次の時刻枠からは通常どおり実行します。"
+            ),
+            now=now,
+        )
+        return len(skipped)
+
+    def record_skipped(self, now: datetime, jobs: list[Job]) -> None:
+        """スキップしたペアを JSONL に追記する（1行1件。失敗しても常駐は続ける）。"""
+        path = Path(os.environ.get("GOOGLE_SKIP_LOG", "").strip() or DEFAULT_GOOGLE_SKIP_LOG)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                for job in jobs:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "skipped_at": now.isoformat(),
+                                "date": now.strftime("%Y-%m-%d"),
+                                "slot": job.slot,
+                                "schedule_id": job.target.schedule_id,
+                                "keyword": job.target.keyword,
+                                "region": job.target.region_label,
+                                "device": job.target.device,
+                                "platform": job.target.platform,
+                                "reason": "google_circuit_breaker",
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            print(f"    スキップ一覧を追記: {path}")
+        except OSError as caught:
+            print(f"    ! スキップ一覧の書き込みに失敗（続行）: {caught}")
 
     # ------------------------------------------------------------------
     # 集計ログ

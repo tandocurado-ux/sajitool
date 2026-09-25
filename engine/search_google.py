@@ -61,12 +61,15 @@ async def search(
     profile = dev.resolve_device(device)
     outcome = dev.SearchOutcome(status="error", platform=PLATFORM, device=device)
 
-    browser = await dev.start_browser(proxy=proxy, headless=headless)
+    browser = await dev.start_browser(proxy=proxy, headless=headless, platform=PLATFORM)
     tab = None
     try:
         tab = await browser.get("about:blank")
         await dev.setup_request_interception(tab, proxy)
         await dev.apply_device_profile(tab, profile)
+        # 同意画面回避と BOT シグナル削減。地点指定シーケンスより前に入れる
+        # （地点指定の順序には影響しない）。
+        await dev.inject_google_cookies(tab)
 
         if proxy is not None:
             outcome.exit_ip = await dev.read_exit_ip(tab)
@@ -84,7 +87,7 @@ async def search(
         # 完了を待ってから必ずリロードする（順序は get → reload のまま）。
         await dev.wait_for_ready(tab, label="トップ到達待ち")
         await dev.reload_with_retry(tab, HOME_URL)
-        await tab.sleep(1.0)
+        await tab.sleep(random.uniform(1.0, 2.0))  # 等間隔にしない
         await dev.wait_for_ready(tab, label="リロード後待ち")
         dev.stage("最初のページ到達", await dev.current_url(tab) or HOME_URL)
 
@@ -93,7 +96,7 @@ async def search(
             consent = await dev.try_accept_consent(tab)
             if consent:
                 outcome.note(f"同意画面を処理しました（{consent}）")
-                await tab.sleep(1.5)
+                await tab.sleep(random.uniform(1.5, 2.5))
 
         # --- 検索 ---
         try:
@@ -106,7 +109,7 @@ async def search(
             if not consent:
                 raise
             outcome.note(f"検索窓が無かったので同意画面を処理しました（{consent}）")
-            await tab.sleep(1.5)
+            await tab.sleep(random.uniform(1.5, 2.5))
             await dev.focus_search_box(
                 tab, profile, SEARCH_BOX_SELECTORS[device], SEARCH_INPUT_NAMES
             )
@@ -128,12 +131,16 @@ async def search(
         if any(marker in outcome.final_url for marker in BLOCKED_URL_MARKERS):
             outcome.status = "blocked"
         elif SEARCH_URL_MARKER not in outcome.final_url:
-            # 検索窓に文字が入っただけの誤成功を防ぐ not_searched ガード
+            # 検索窓に文字が入っただけの誤成功を防ぐ not_searched ガード。
+            # 最終 URL が空 / SERP に到達していない「判定不能」は BOT の疑いとして
+            # runner 側でセッション変更リトライの対象になる。
             outcome.status = "error"
             outcome.error = "not_searched"
+            outcome.note("判定不能（最終 URL が検索結果でない）のため BOT 扱いでリトライ対象")
         elif outcome.result_count == 0:
             outcome.status = "error"
             outcome.error = "no_results"
+            outcome.note("判定不能（SERP の DOM に到達せず）のため BOT 扱いでリトライ対象")
         else:
             outcome.status = "ok"
         dev.stage(

@@ -401,6 +401,9 @@ class ProxyConfig:
     server: str
     username: str
     password: str
+    # ログ用。Google はキーワード単位で固定、Yahoo! は毎回新規。
+    session_id: str = ""
+    session_mode: str = "random"
 
 
 def soax_region_for(prefecture: Optional[str]) -> Optional[str]:
@@ -475,12 +478,43 @@ def soax_session_pinned() -> bool:
     return bool(os.environ.get("SOAX_SESSION_ID", "").strip())
 
 
+# --------------------------------------------------------------------------
+# Google のセッション固定（BOT 検知の密度対策）
+#
+# Google は同一キーワードでは SOAX の session を固定し、IP の切り替えは
+# rotate-timed_300（5分同一 IP）に任せる。毎リクエストで session を振り直すと
+# 5分内に同じ検索が別 IP から連射され（IP flood）、検知の材料になる。
+# /sorry/ を掴んだ session は「焼けた」とみなして rotate_google_session で
+# 振り直し、以後その session は使わない。Yahoo! はこれまでどおり毎回新規。
+# --------------------------------------------------------------------------
+
+_google_session_salt: dict[str, str] = {}
+
+
+def google_session_id(keyword: str) -> str:
+    """同じキーワードなら同じ session（salt が振り直されるまで）。"""
+    import hashlib
+
+    salt = _google_session_salt.get(keyword, "")
+    digest = hashlib.sha1(f"{keyword}\u0000{salt}".encode("utf-8")).hexdigest()
+    return sanitize_session_id(f"g{digest[:15]}")
+
+
+def rotate_google_session(keyword: str) -> str:
+    """そのキーワードの session を完全に振り直し、別 IP プールに移る。"""
+    _google_session_salt[keyword] = new_session_id()
+    return google_session_id(keyword)
+
+
 def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
 def build_proxy_config(
-    prefecture: Optional[str] = None, *, platform: Optional[str] = None
+    prefecture: Optional[str] = None,
+    *,
+    platform: Optional[str] = None,
+    keyword: Optional[str] = None,
 ) -> Optional[ProxyConfig]:
     """環境変数から SOAX の設定を組み立てる。SOAX_PASS が無ければ None。
 
@@ -520,8 +554,17 @@ def build_proxy_config(
         if google_rotate:
             rotate_seconds = google_rotate
 
-    raw_session = os.environ.get("SOAX_SESSION_ID", "").strip() or new_session_id()
-    session_id = sanitize_session_id(raw_session)
+    pinned = os.environ.get("SOAX_SESSION_ID", "").strip()
+    if pinned:
+        session_id = sanitize_session_id(pinned)
+        session_mode = "pinned"
+    elif platform == "google" and keyword:
+        # Google だけキーワード単位で固定（Yahoo! の経路は従来どおり毎回新規）。
+        session_id = google_session_id(keyword)
+        session_mode = "keyword"
+    else:
+        session_id = sanitize_session_id(new_session_id())
+        session_mode = "random"
 
     return ProxyConfig(
         server=endpoint,
@@ -533,6 +576,8 @@ def build_proxy_config(
             session_id=session_id,
         ),
         password=password,
+        session_id=session_id,
+        session_mode=session_mode,
     )
 
 
@@ -585,19 +630,38 @@ def find_chrome() -> str:
     )
 
 
+# Google 経路だけに足す起動引数（fingerprint 対策）。Yahoo! には付けない。
+GOOGLE_EXTRA_BROWSER_ARGS = ("--disable-blink-features=AutomationControlled",)
+# --disable-features は Chrome が「最後に指定した1つ」しか見ないので、
+# 複数の機能は必ず1つの引数にまとめる（別引数で足すと Translate が消える）。
+GOOGLE_EXTRA_DISABLED_FEATURES = ("NetworkServiceIPv6",)
+
+
 async def start_browser(
-    *, proxy: Optional[ProxyConfig], headless: bool = False
+    *,
+    proxy: Optional[ProxyConfig],
+    headless: bool = False,
+    platform: Optional[str] = None,
 ) -> uc.Browser:
-    """TZ=Asia/Tokyo・--lang=ja で Google Chrome を起動する。"""
+    """TZ=Asia/Tokyo・--lang=ja で Google Chrome を起動する。
+
+    platform="google" のときだけ GOOGLE_EXTRA_* を足す。Yahoo! の引数は不変。
+    """
     os.environ["TZ"] = TIMEZONE_ID
+
+    disabled_features = ["Translate"]
+    if platform == "google":
+        disabled_features += list(GOOGLE_EXTRA_DISABLED_FEATURES)
 
     browser_args = [
         "--lang=ja",
         f"--accept-lang={ACCEPT_LANGUAGE}",
-        "--disable-features=Translate",
+        f"--disable-features={','.join(disabled_features)}",
         "--no-first-run",
         "--no-default-browser-check",
     ]
+    if platform == "google":
+        browser_args.extend(GOOGLE_EXTRA_BROWSER_ARGS)
     # コンテナで動かすときの追加オプション（--no-sandbox など）。
     # レシピの必須条件（--lang=ja / Accept-Language / TZ）は上で固定してあるので、
     # ここで足せるのは環境差を吸収するためのものだけ。
@@ -629,7 +693,8 @@ async def setup_request_interception(tab, proxy: Optional[ProxyConfig]) -> None:
     stage(
         "プロキシ設定",
         (
-            f"server={proxy.server} 認証=あり（Fetch.AuthRequired で応答）"
+            f"server={proxy.server} 認証=あり（Fetch.AuthRequired で応答） "
+            f"session={proxy.session_id or '-'}（{proxy.session_mode}）"
             if proxy
             else "プロキシなし（直結。画像・メディア・フォントの遮断のみ）"
         ),
@@ -757,6 +822,61 @@ async def apply_device_profile(tab, profile: DeviceProfile) -> None:
             headers=cdp.network.Headers({"Accept-Language": ACCEPT_LANGUAGE})
         )
     )
+
+
+# Google の同意画面回避と BOT シグナル削減のための cookie。
+# google.com と google.co.jp の両方に CONSENT / SOCS / NID を入れる（計6個）。
+# SOCS は同意済みを表す一般的な値。NID は形式だけ合わせたランダム値。
+# GOOGLE_PRESET_COOKIES=0 で無効化できる。Yahoo! の経路では呼ばない。
+GOOGLE_COOKIE_DOMAINS = (".google.com", ".google.co.jp")
+GOOGLE_CONSENT_VALUE = "YES+cb.20240101-01-p0.ja+FX+000"
+GOOGLE_SOCS_VALUE = "CAESHAgBEhJnd3NfMjAyMzAzMjgtMF9SQzIaAmVuIAEaBgiA_LyaBg"
+
+
+def _google_nid_value() -> str:
+    alphabet = string.ascii_letters + string.digits + "-_"
+    return "511=" + "".join(random.choices(alphabet, k=128))
+
+
+def google_preset_cookies() -> list[tuple[str, str, str]]:
+    """(name, value, domain) の一覧。"""
+    nid = _google_nid_value()
+    cookies: list[tuple[str, str, str]] = []
+    for domain in GOOGLE_COOKIE_DOMAINS:
+        cookies.append(("CONSENT", GOOGLE_CONSENT_VALUE, domain))
+        cookies.append(("SOCS", GOOGLE_SOCS_VALUE, domain))
+        cookies.append(("NID", nid, domain))
+    return cookies
+
+
+async def inject_google_cookies(tab) -> None:
+    """Google のトップを開く前に cookie を入れる。失敗しても検索は続ける。"""
+    if not _env_flag("GOOGLE_PRESET_COOKIES", "1"):
+        stage("Cookie注入", "GOOGLE_PRESET_COOKIES=0 のためスキップ")
+        return
+
+    cookies = google_preset_cookies()
+    expires = cdp.network.TimeSinceEpoch(time.time() + 180 * 24 * 3600)
+    params = [
+        cdp.network.CookieParam(
+            name=name,
+            value=value,
+            domain=domain,
+            path="/",
+            secure=True,
+            http_only=(name != "CONSENT"),
+            expires=expires,
+        )
+        for name, value, domain in cookies
+    ]
+    try:
+        await tab.send(cdp.network.set_cookies(cookies=params))
+        stage(
+            "Cookie注入",
+            f"{len(params)} 個（CONSENT / SOCS / NID × {', '.join(GOOGLE_COOKIE_DOMAINS)}）",
+        )
+    except Exception as caught:  # noqa: BLE001 - 注入できなくても検索は続ける
+        print(f"    ! cookie の注入に失敗（続行）: {type(caught).__name__}: {caught}")
 
 
 async def grant_geolocation(

@@ -47,3 +47,6 @@ engine/.venv/
 engine/screenshots/
 __pycache__/
 *.pyc
+
+# engine: Google circuit breaker のスキップ記録（ランタイム生成）
+engine/skipped_google.jsonl

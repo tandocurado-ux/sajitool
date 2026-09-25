@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -40,6 +42,13 @@ ERROR_LABELS = {
 
 # 新しい exit IP を引き直せば通る見込みがあるもの。
 RETRYABLE_ERRORS = ("search_box_not_found", dev.PROTOCOL_ERROR)
+
+# Google だけ: 判定不能（最終 URL が SERP でない / SERP の DOM 未到達）も
+# BOT の疑いとしてリトライ対象にする。Yahoo! は従来どおり対象外。
+GOOGLE_INDETERMINATE_ERRORS = ("not_searched", "no_results")
+
+# Google のセッション変更リトライ前に空ける秒数（一様乱数。等間隔にしない）。
+GOOGLE_RETRY_JITTER_SECONDS = (3.0, 8.0)
 
 
 def force_utf8_stdout() -> None:
@@ -147,7 +156,11 @@ async def _search(
     if engine is None:
         raise dev.SearchError(f"未対応の platform です: {platform}")
 
-    proxy = dev.build_proxy_config(prefecture, platform=platform) if use_proxy else None
+    proxy = (
+        dev.build_proxy_config(prefecture, platform=platform, keyword=keyword)
+        if use_proxy
+        else None
+    )
     if use_proxy and proxy is None and not quiet:
         print("  ! SOAX の環境変数が未設定のため、プロキシ無しで実行します。")
 
@@ -162,11 +175,18 @@ async def _search(
     )
 
 
-def should_retry(outcome: dev.SearchOutcome) -> bool:
+def should_retry(outcome: dev.SearchOutcome, platform: Optional[str] = None) -> bool:
     """IP を変えれば通るかもしれない結果か。"""
     if outcome.status == "blocked":
         return True
-    return outcome.status == "error" and outcome.error in RETRYABLE_ERRORS
+    if outcome.status != "error":
+        return False
+    if outcome.error in RETRYABLE_ERRORS:
+        return True
+    if platform == "google":
+        # 判定不能も BOT 扱い（最終 URL が空のケースを含む）。
+        return outcome.error in GOOGLE_INDETERMINATE_ERRORS or outcome.final_url == ""
+    return False
 
 
 def run_search(
@@ -202,11 +222,25 @@ def run_search(
     )
     outcome = asyncio.run(_search(**kwargs))
 
-    if not allow_retry or not use_proxy or not should_retry(outcome):
+    if not allow_retry or not use_proxy or not should_retry(outcome, platform):
+        if platform == "google" and use_proxy and outcome.status == "blocked":
+            # リトライしない設定でも、焼けた session は次回に持ち越さない。
+            dev.rotate_google_session(keyword)
         return outcome
     if dev.soax_session_pinned():
         outcome.note("SOAX_SESSION_ID が固定されているためリトライしません（同じ IP になる）。")
         return outcome
+
+    if platform == "google":
+        # BOT 検知（または判定不能）の session は焼けたとみなして完全に振り直し、
+        # 別 IP プールに移ってからリトライする。連射にならないようジッターも入れる。
+        new_session = dev.rotate_google_session(keyword)
+        jitter = random.uniform(*GOOGLE_RETRY_JITTER_SECONDS)
+        print(
+            f"  ! Google: session を振り直しました（新 session={new_session}）。"
+            f"op 間ジッター {jitter:.1f} 秒待ってからリトライします"
+        )
+        time.sleep(jitter)
 
     first_status = outcome.status
     first_error = outcome.error
@@ -221,6 +255,9 @@ def run_search(
     # ここに来た時点で前の Chrome プロセスは終了している（同時に2つは動かさない）。
     retry = asyncio.run(_search(**kwargs))
     retry.attempts = 2
+    if platform == "google" and retry.status == "blocked":
+        # リトライも /sorry/ なら、その session も焼けたので次回に持ち越さない。
+        dev.rotate_google_session(keyword)
     retry.note(
         f"リトライ: 1回目 status={first_status}"
         + (f"/{first_error}" if first_error else "")
