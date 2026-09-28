@@ -196,6 +196,10 @@ BOT 検知（/sorry/）が続くため、**Google の pc は登録も実行も�
 - サーバー: 一括登録の生成で Google × pc を作らず、単発追加と即時実行は Google × pc を弾く
 - エンジン: DB に Google × pc が残っていても `scheduler.py` は積まず
   「Google の pc はスキップ（mobile のみ計測）」とログに出す（即時実行・run_once も同様）
+- 実験用: `SAJI_GOOGLE_PC_ENABLED=1` でエンジンの Google × pc スキップを外して実行する
+  （Render の環境変数）。即時実行から pc を撃つには Vercel 側にも同じ env を入れる。
+  登録側のガード（作成・一括登録）は変わらない。UA 修正後に pc が通るかを見て、
+  良ければ既定 ON にして mobile 限定を正式に解除する
 
 既存の Google × pc を洗い出す SQL（削除は手動で）:
 

@@ -52,12 +52,23 @@ ALLOWED_DEVICES: dict[str, tuple[str, ...]] = {
 }
 
 
+# 実験用: 1 にすると Google × pc のスキップを外して実行する（UA 修正後に pc が通るかの検証）。
+# 既定 0 = 従来どおりスキップ。画面・サーバーの登録ガードはこの値では変わらない。
+GOOGLE_PC_ENABLED_ENV = "SAJI_GOOGLE_PC_ENABLED"
+
+
+def google_pc_enabled() -> bool:
+    return os.environ.get(GOOGLE_PC_ENABLED_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def skip_reason(target: ScheduleTarget) -> Optional[str]:
     """このスケジュールを撃ってはいけない理由。撃ってよければ None。"""
     allowed = ALLOWED_DEVICES.get(target.platform)
     if allowed is None or target.device in allowed:
         return None
     if target.platform == "google":
+        if google_pc_enabled():
+            return None  # 実験モード: pc も撃つ
         return "Google の pc はスキップ（mobile のみ計測）"
     return f"{target.platform} の {target.device} は計測対象外"
 

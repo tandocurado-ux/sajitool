@@ -52,7 +52,13 @@ export async function enqueueImmediateRun(
     return { ok: false, error: "このスケジュールを操作する権限がありません。" };
   }
   // Google × pc は実行しない（登録ガードをすり抜けた既存行への保険）。
-  if (!isAllowedCombination(String(keyword.data.platform) as Platform, String(schedule.data.device) as Device)) {
+  // 実験モード（SAJI_GOOGLE_PC_ENABLED=1。engine 側と同じ名前の env）では即時実行だけ通す。
+  // 登録側のガード（作成・一括登録）はこの値では変わらない。
+  const googlePcExperiment = process.env.SAJI_GOOGLE_PC_ENABLED === "1";
+  if (
+    !googlePcExperiment &&
+    !isAllowedCombination(String(keyword.data.platform) as Platform, String(schedule.data.device) as Device)
+  ) {
     return { ok: false, error: `${GOOGLE_DEVICE_NOTE}。このスケジュールは実行できません。` };
   }
 

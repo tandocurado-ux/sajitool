@@ -964,6 +964,14 @@ class Scheduler:
             f"breaker 連続 {self.google_breaker_threshold} 件 blocked で発動"
         )
         print(
+            "  Google×pc  : "
+            + (
+                f"実行する（実験モード {runner.GOOGLE_PC_ENABLED_ENV}=1）"
+                if runner.google_pc_enabled()
+                else f"スキップ（mobile のみ計測。{runner.GOOGLE_PC_ENABLED_ENV}=1 で実験的に実行）"
+            )
+        )
+        print(
             f"  アセット遮断: 共通 {dev.describe_blocking(dev.blocked_assets_for(None))}"
             f" / Google {dev.describe_blocking(dev.blocked_assets_for('google'))}"
             f"（{dev.BLOCK_ASSETS_ENV} / {dev.BLOCK_ASSETS_GOOGLE_ENV}）"
