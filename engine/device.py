@@ -296,7 +296,7 @@ DEVICE_PROFILES: dict[str, DeviceProfile] = {
     "pc": DeviceProfile(
         name="pc",
         width=1280,
-        height=800,
+        height=900,
         device_scale_factor=1.0,
         mobile=False,
         touch_points=0,
@@ -811,8 +811,74 @@ async def setup_request_interception(tab, proxy: Optional[ProxyConfig]) -> None:
     )
 
 
+_CHROME_VERSION_IN_UA = re.compile(r"Chrome/(\d+)(?:\.[\d.]+)?")
+FALLBACK_CHROME_MAJOR = "153"
+
+
+def chrome_version_from_ua(real_ua: str) -> tuple[str, str]:
+    """実 UA から (メジャー, UA に載っているバージョン文字列) を取り出す。
+
+    最近の Chrome は UA reduction で "Chrome/153.0.0.0" の形になっているので、
+    その文字列をそのまま使う（メジャーだけ本物なら UA-CH と整合する）。
+    """
+    match = _CHROME_VERSION_IN_UA.search(real_ua or "")
+    if not match:
+        return FALLBACK_CHROME_MAJOR, f"{FALLBACK_CHROME_MAJOR}.0.0.0"
+    return match.group(1), match.group(0)[len("Chrome/") :]
+
+
+def build_user_agent(profile: DeviceProfile, real_ua: str) -> str:
+    """UA 文字列を実 UA 任せにせず、UA-CH と整合する形で組み立てる。
+
+    本番（Render）の実 UA は "(X11; Linux x86_64)" なので、pc でそのまま使うと
+    UA=Linux / UA-CH=Windows の矛盾になり、mobile の "Windows NT" 置換も発動しない。
+    そのため置換ではなく、実 UA からは Chrome のバージョンだけを取って生成する。
+    """
+    _major, version = chrome_version_from_ua(real_ua)
+    if profile.mobile:
+        android_major = profile.ua_platform_version.split(".")[0]
+        return (
+            f"Mozilla/5.0 (Linux; Android {android_major}; {profile.ua_model}) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Mobile Safari/537.36"
+        )
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
+    )
+
+
+def build_brands(real_brands: list[dict[str, Any]], major: str) -> list[tuple[str, str]]:
+    """userAgentData.brands。実 Chrome の brands がメジャーと一致すればそのまま、
+    無ければ同じメジャーで組み立てる（UA と brands のバージョンを一致させる）。"""
+    cleaned = [
+        (str(brand.get("brand", "")), str(brand.get("version", "")))
+        for brand in real_brands
+        if brand.get("brand")
+    ]
+    if any(version == major for _brand, version in cleaned):
+        return cleaned
+    return [("Chromium", major), ("Google Chrome", major), ("Not/A)Brand", "8")]
+
+
+def describe_device_profile(profile: DeviceProfile, user_agent: str, brands: list[tuple[str, str]]) -> str:
+    major, _version = chrome_version_from_ua(user_agent)
+    brand_text = ", ".join(f"{brand} {version}" for brand, version in brands)
+    return (
+        f"{profile.name} {profile.width}x{profile.height} DSF={profile.device_scale_factor:g} "
+        f"mobile={str(profile.mobile).lower()} touch={profile.touch_points} / "
+        f"UA=Chrome {major} {'Android ' + profile.ua_model if profile.mobile else 'Windows NT 10.0'} / "
+        f"UA-CH platform={profile.ua_platform} {profile.ua_platform_version} "
+        f"arch={profile.ua_architecture or '-'} model={profile.ua_model or '-'} "
+        f"mobile={str(profile.mobile).lower()} / brands=[{brand_text}]"
+    )
+
+
 async def apply_device_profile(tab, profile: DeviceProfile) -> None:
-    """UA・画面サイズ・タッチ・TZ・Accept-Language を一貫して適用する。"""
+    """UA・画面サイズ・タッチ・TZ・Accept-Language を一貫して適用する。
+
+    UA 文字列・UA-CH・brands は同じ Chrome メジャーと同じ platform を名乗る
+    （どれか1つでも食い違うと BOT 検知のシグナルになる）。
+    """
     raw = await tab.evaluate(
         """
         (() => {
@@ -827,22 +893,12 @@ async def apply_device_profile(tab, profile: DeviceProfile) -> None:
     )
     info = json.loads(raw) if isinstance(raw, str) else {"ua": "", "brands": []}
     real_ua: str = info.get("ua", "")
-
-    if profile.mobile:
-        android_major = profile.ua_platform_version.split(".")[0]
-        user_agent = real_ua.replace(
-            "Windows NT 10.0; Win64; x64",
-            f"Linux; Android {android_major}; {profile.ua_model}",
-        ).replace("Safari/537.36", "Mobile Safari/537.36")
-    else:
-        user_agent = real_ua
-
+    major, _version = chrome_version_from_ua(real_ua)
+    user_agent = build_user_agent(profile, real_ua)
+    brand_pairs = build_brands(info.get("brands", []) or [], major)
     brands = [
-        cdp.emulation.UserAgentBrandVersion(
-            brand=str(brand.get("brand", "")), version=str(brand.get("version", ""))
-        )
-        for brand in info.get("brands", [])
-        if brand.get("brand")
+        cdp.emulation.UserAgentBrandVersion(brand=brand, version=version)
+        for brand, version in brand_pairs
     ]
 
     await tab.send(
@@ -860,6 +916,7 @@ async def apply_device_profile(tab, profile: DeviceProfile) -> None:
             ),
         )
     )
+    stage("デバイス設定", describe_device_profile(profile, user_agent, brand_pairs))
     await tab.send(
         cdp.emulation.set_device_metrics_override(
             width=profile.width,
