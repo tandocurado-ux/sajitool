@@ -170,6 +170,21 @@ Yahoo! だけ / 両方）を選び、1枠あたり N 件以内になるよう時
 
 Yahoo! のフロー・username・リトライ（1回）は従来どおりで変えていない。
 
+### 帯域（SOAX の転送量）
+
+- **アセット遮断**: image / font / media は Fetch ドメインで abort する（従来から常時有効）。
+  `SAJI_BLOCK_ASSETS`（既定 `1` = 従来どおり全3種。`0` で無効、`image,font` のように種類を絞れる）、
+  Google だけ変えるなら `SAJI_BLOCK_ASSETS_GOOGLE`（未設定なら共通設定に従う。例: Google で
+  検知が悪化したら `font,media` にして image だけ外す）。document / script / stylesheet /
+  xhr / fetch は検索結果 DOM の構築に必要なので遮断しない
+- **転送量の実測**: 1 run ごとに CDP の `Network.loadingFinished`（回線上の受信バイト）を積算し、
+  結果の「転送量: X.XX MB（ブロック: on/off） / ページロード回数: N（リロード M / 再ナビ K /
+  検索窓リトライ R）」に出す。セッション変更リトライは全試行の合計。1時間ごとの集計に
+  platform 別の平均 MB/run と平均ページロード回数も出す（リロード頻度の判断材料）
+- 目安（ローカル・直結・ヘッドレス）: Yahoo! pc は遮断 on 5.9 MB / off 10.6 MB、
+  Google mobile は on 3.0 MB / off 6.6 MB。残りの大半は script / stylesheet で、
+  レシピの必須リロードが nodriver 既定の ignore_cache=True で全再取得になっている
+
 ### Google は mobile のみ計測
 
 実測で Google × mobile は通り（exit IP 133.106 帯で ok が続く）、Google × pc は

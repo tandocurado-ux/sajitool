@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import traceback
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -33,14 +34,120 @@ ACCEPT_LANGUAGE = "ja-JP,ja;q=0.9"
 TIMEZONE_ID = "Asia/Tokyo"
 EXIT_IP_ENDPOINT = "https://api.ipify.org?format=json"
 
-# 帯域節約のため落とすリソース種別。HTML/JS/CSS は通す。
-BLOCKED_RESOURCE_TYPES = frozenset(
-    {
-        cdp.network.ResourceType.IMAGE,
-        cdp.network.ResourceType.MEDIA,
-        cdp.network.ResourceType.FONT,
-    }
-)
+# 帯域節約のため落とせるリソース種別。document / script / stylesheet / xhr / fetch は
+# ページの JS 動作と検索結果 DOM の構築に必要なので、ここに入れられるのは
+# image / font / media の3種だけ（順位判定に不要なもの）。
+ASSET_TYPE_NAMES: dict[str, "cdp.network.ResourceType"] = {
+    "image": cdp.network.ResourceType.IMAGE,
+    "font": cdp.network.ResourceType.FONT,
+    "media": cdp.network.ResourceType.MEDIA,
+}
+DEFAULT_BLOCKED_ASSETS = ("image", "font", "media")
+# 従来からこの3種は常時ブロックしていたので、既定は 1（有効）= 従来と同じ動作。
+# SAJI_BLOCK_ASSETS=0 で無効、"image,font" のように種類を絞ることもできる。
+# Google だけ変えたいときは SAJI_BLOCK_ASSETS_GOOGLE（未設定なら SAJI_BLOCK_ASSETS に従う）。
+BLOCK_ASSETS_ENV = "SAJI_BLOCK_ASSETS"
+BLOCK_ASSETS_GOOGLE_ENV = "SAJI_BLOCK_ASSETS_GOOGLE"
+
+
+def parse_blocked_assets(raw: str) -> tuple[str, ...]:
+    """"1" → 全3種、"0" / 空 → なし、それ以外は "image,font" のような種類の列挙。"""
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on", "all"):
+        return DEFAULT_BLOCKED_ASSETS
+    if value in ("", "0", "false", "no", "off", "none"):
+        return ()
+    names = tuple(name.strip() for name in value.split(",") if name.strip())
+    unknown = [name for name in names if name not in ASSET_TYPE_NAMES]
+    if unknown:
+        print(f"  ! {BLOCK_ASSETS_ENV} に未対応の種類があります（無視）: {', '.join(unknown)}")
+    return tuple(name for name in names if name in ASSET_TYPE_NAMES)
+
+
+def blocked_assets_for(platform: Optional[str]) -> tuple[str, ...]:
+    """この platform でブロックするアセット種別（env の解釈）。"""
+    raw = os.environ.get(BLOCK_ASSETS_ENV, "1")
+    if platform == "google":
+        google_raw = os.environ.get(BLOCK_ASSETS_GOOGLE_ENV, "").strip()
+        if google_raw:
+            raw = google_raw
+    return parse_blocked_assets(raw)
+
+
+def describe_blocking(names: tuple[str, ...]) -> str:
+    return f"on（{', '.join(names)}）" if names else "off"
+
+
+# --------------------------------------------------------------------------
+# 転送量とページロード回数の計測（帯域の実測）
+# --------------------------------------------------------------------------
+
+
+class TransferMeter:
+    """1回の Chrome セッションで受信したバイト数と、ページロードの内訳を数える。
+
+    バイト数は CDP の Network.loadingFinished（encodedDataLength = 回線上の受信量）
+    の積算。ブロックしたリクエストは回線に出ていないので数えない（件数だけ数える）。
+    """
+
+    def __init__(self, blocked: tuple[str, ...]) -> None:
+        self.blocked = blocked
+        self.bytes_total = 0
+        self.bytes_by_type: Counter[str] = Counter()
+        self.requests = 0
+        self.blocked_requests: Counter[str] = Counter()
+        self.document_loads = 0
+        self.reloads = 0
+        self.reload_failures = 0
+        self.renavigations = 0
+        self.searchbox_reloads = 0
+        self._type_by_request: dict[str, str] = {}
+
+    @property
+    def megabytes(self) -> float:
+        return self.bytes_total / (1024 * 1024)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "mb": round(self.megabytes, 3),
+            "requests": self.requests,
+            "blocked": dict(self.blocked_requests),
+            "blocking": describe_blocking(self.blocked),
+            "by_type": {name: round(size / (1024 * 1024), 3) for name, size in self.bytes_by_type.most_common(6)},
+            "document_loads": self.document_loads,
+            "reloads": self.reloads,
+            "reload_failures": self.reload_failures,
+            "renavigations": self.renavigations,
+            "searchbox_reloads": self.searchbox_reloads,
+        }
+
+    def describe(self) -> str:
+        top = ", ".join(f"{name} {size:.2f}" for name, size in self.summary()["by_type"].items())
+        blocked = ", ".join(f"{name} {count}" for name, count in sorted(self.blocked_requests.items()))
+        return (
+            f"転送量: {self.megabytes:.2f} MB（ブロック: {describe_blocking(self.blocked)}）"
+            f" 受信 {self.requests} 件 [{top or '-'}]"
+            f" ブロック {sum(self.blocked_requests.values())} 件[{blocked or '-'}] / "
+            f"ページロード回数: {self.document_loads}"
+            f"（リロード {self.reloads}"
+            f"{' 失敗 ' + str(self.reload_failures) if self.reload_failures else ''}"
+            f" / 再ナビ {self.renavigations} / 検索窓リトライ {self.searchbox_reloads}）"
+        )
+
+
+def meter_for(tab) -> Optional[TransferMeter]:
+    return getattr(getattr(tab, "browser", None), "_saji_meter", None)
+
+
+# 直近に閉じた Chrome の計測結果。runner が outcome に載せて表示・集計に使う。
+_last_transfer: Optional[dict[str, Any]] = None
+
+
+def take_last_transfer() -> Optional[dict[str, Any]]:
+    global _last_transfer
+    value = _last_transfer
+    _last_transfer = None
+    return value
 
 WINDOWS_CHROME_PATHS = (
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -663,6 +770,24 @@ class SearchOutcome:
     screenshot_path: Optional[Path] = None
     # 1 = 初回のみ、2 = セッションを変えてリトライした
     attempts: int = 1
+    # 帯域の実測（全試行の合計）。close_browser の計測を runner が載せる。
+    transfer_mb: float = 0.0
+    page_loads: int = 0
+    reloads: int = 0
+    renavigations: int = 0
+    searchbox_reloads: int = 0
+    blocking: str = ""
+
+    def add_transfer(self, summary: Optional[dict[str, Any]]) -> None:
+        """1試行ぶんの計測を足し込む（セッション変更リトライで複数回呼ばれる）。"""
+        if not summary:
+            return
+        self.transfer_mb += float(summary.get("mb", 0.0))
+        self.page_loads += int(summary.get("document_loads", 0))
+        self.reloads += int(summary.get("reloads", 0))
+        self.renavigations += int(summary.get("renavigations", 0))
+        self.searchbox_reloads += int(summary.get("searchbox_reloads", 0))
+        self.blocking = str(summary.get("blocking", self.blocking))
 
     def note(self, message: str) -> None:
         """想定外の挙動を落とさずに残す。"""
@@ -750,21 +875,33 @@ async def start_browser(
     return browser
 
 
-async def setup_request_interception(tab, proxy: Optional[ProxyConfig]) -> None:
-    """画像・メディア・フォントを abort し、必要ならプロキシ認証に応答する。"""
+async def setup_request_interception(
+    tab, proxy: Optional[ProxyConfig], platform: Optional[str] = None
+) -> None:
+    """image / font / media を env に従って abort し、必要ならプロキシ認証に応答する。
+    あわせて転送量とページロード回数の計測を仕込む。"""
+    blocked_names = blocked_assets_for(platform)
+    blocked_types = frozenset(ASSET_TYPE_NAMES[name] for name in blocked_names)
+    meter = TransferMeter(blocked_names)
+    browser = getattr(tab, "browser", None)
+    if browser is not None:
+        setattr(browser, "_saji_meter", meter)
+
     stage(
         "プロキシ設定",
         (
             f"server={proxy.server} 認証=あり（Fetch.AuthRequired で応答） "
             f"session_mode={proxy.session_mode} {describe_proxy(proxy)}"
             if proxy
-            else "プロキシなし（直結。画像・メディア・フォントの遮断のみ）"
-        ),
+            else "プロキシなし（直結）"
+        )
+        + f" / アセットブロック: {describe_blocking(blocked_names)}",
     )
 
     async def on_request_paused(event: cdp.fetch.RequestPaused, connection) -> None:
         try:
-            if event.resource_type in BLOCKED_RESOURCE_TYPES:
+            if event.resource_type in blocked_types:
+                meter.blocked_requests[str(event.resource_type.value).lower()] += 1
                 await connection.send(
                     cdp.fetch.fail_request(
                         request_id=event.request_id,
@@ -778,6 +915,24 @@ async def setup_request_interception(tab, proxy: Optional[ProxyConfig]) -> None:
         except Exception:
             # 既に解決済みのリクエストは continue できない。落とさない。
             pass
+
+    main_frame_id = str(getattr(getattr(tab, "target", None), "target_id", "") or "")
+
+    async def on_request_will_be_sent(event: cdp.network.RequestWillBeSent, _connection) -> None:
+        type_name = str(event.type_.value).lower() if event.type_ is not None else "other"
+        meter._type_by_request[str(event.request_id)] = type_name
+        # メインフレームの document 取得 = 1ページロード（top・reload・検索結果・exit IP 確認）。
+        if type_name == "document" and (not main_frame_id or str(event.frame_id) == main_frame_id):
+            meter.document_loads += 1
+
+    async def on_loading_finished(event: cdp.network.LoadingFinished, _connection) -> None:
+        size = int(event.encoded_data_length or 0)
+        meter.requests += 1
+        meter.bytes_total += size
+        meter.bytes_by_type[meter._type_by_request.pop(str(event.request_id), "other")] += size
+
+    tab.add_handler(cdp.network.RequestWillBeSent, on_request_will_be_sent)
+    tab.add_handler(cdp.network.LoadingFinished, on_loading_finished)
 
     async def on_auth_required(event: cdp.fetch.AuthRequired, connection) -> None:
         assert proxy is not None
@@ -1271,14 +1426,19 @@ async def reload_with_retry(tab, url: str) -> None:
     やり直し、それでもだめなら同じ URL への tab.get() で代替する。
     """
     last: Optional[BaseException] = None
+    meter = meter_for(tab)
     for attempt in range(1, RELOAD_ATTEMPTS + 1):
         try:
             await tab.reload()
+            if meter is not None:
+                meter.reloads += 1
             if attempt > 1:
                 print(f"    リロード成功（{attempt}/{RELOAD_ATTEMPTS} 回目）")
             return
         except ProtocolException as caught:
             last = caught
+            if meter is not None:
+                meter.reload_failures += 1
             wait = RELOAD_RETRY_WAIT_SECONDS[min(attempt, len(RELOAD_RETRY_WAIT_SECONDS)) - 1]
             print(
                 f"    ! リロード失敗（{attempt}/{RELOAD_ATTEMPTS}）: "
@@ -1287,6 +1447,8 @@ async def reload_with_retry(tab, url: str) -> None:
             await asyncio.sleep(wait)
 
     print(f"    ! リロードが {RELOAD_ATTEMPTS} 回失敗したため、同じ URL へ再ナビゲーションします: {url}")
+    if meter is not None:
+        meter.renavigations += 1
     try:
         await tab.get(url)
     except Exception as caught:  # noqa: BLE001 - ここで落ちたら呼び出し側の except に任せる
@@ -1311,6 +1473,9 @@ async def _reload_and_wait_for_search_box(tab, selectors: Sequence[str]):
         f"検索窓が {SEARCH_BOX_TIMEOUT_SECONDS:.0f} 秒で見つからず"
         f"（{describe_page_state(before)}）。同じセッションでリロードします",
     )
+    meter = meter_for(tab)
+    if meter is not None:
+        meter.searchbox_reloads += 1
     try:
         url = await current_url(tab)
         await reload_with_retry(tab, url or "about:blank")
@@ -1347,6 +1512,12 @@ async def close_browser(browser, *, context: str = "") -> None:
     proc = getattr(browser, "_process", None)
     pid = getattr(proc, "pid", None) or getattr(browser, "_process_pid", None)
     label = f"Chrome停止{('・' + context) if context else ''}"
+
+    global _last_transfer
+    meter = getattr(browser, "_saji_meter", None)
+    if isinstance(meter, TransferMeter):
+        _last_transfer = meter.summary()
+        print(f"  {meter.describe()}")
 
     try:
         browser.stop()

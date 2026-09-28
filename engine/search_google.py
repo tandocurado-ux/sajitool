@@ -65,7 +65,7 @@ async def search(
     tab = None
     try:
         tab = await browser.get("about:blank")
-        await dev.setup_request_interception(tab, proxy)
+        await dev.setup_request_interception(tab, proxy, platform=PLATFORM)
         await dev.apply_device_profile(tab, profile)
         # 同意画面回避と BOT シグナル削減。地点指定シーケンスより前に入れる
         # （地点指定の順序には影響しない）。

@@ -303,6 +303,8 @@ class Scheduler:
         self.lanes: dict[str, Lane] = {name: Lane(name) for name in LANE_ORDER}
         # 直前に実行した platform。次はこれ以外のレーンを優先する（ラウンドロビン）。
         self.last_platform: Optional[str] = None
+        # 帯域の実測（直近1時間の集計用）: (時刻, platform, MB, ページロード, リロード, 再ナビ, 検索窓リトライ)
+        self.transfer_samples: list[tuple[datetime, str, float, int, int, int, int]] = []
         self.history: list[alerts.ExecutionRecord] = []
         self.consecutive_errors: dict[str, int] = {}
         self.notifier = alerts.Notifier(os.environ.get("ALERT_WEBHOOK_URL"))
@@ -676,6 +678,17 @@ class Scheduler:
             )
 
         runner.print_outcome(outcome)
+        self.transfer_samples.append(
+            (
+                run_at,
+                job.target.platform,
+                outcome.transfer_mb,
+                outcome.page_loads,
+                outcome.reloads,
+                outcome.renavigations,
+                outcome.searchbox_reloads,
+            )
+        )
 
         try:
             run_id = runner.record_outcome(self.sb, job.target, run_at, outcome)
@@ -813,11 +826,33 @@ class Scheduler:
             f"ok {counts['ok']} / blocked {counts['blocked']} / error {counts['error']}"
         )
         print(f"    レーン: {self.describe_lanes()}")
+        self.print_transfer_summary(now, cutoff)
 
         keep_from = now - timedelta(hours=HISTORY_HOURS)
         self.history = [record for record in self.history if record.at >= keep_from]
 
         self.check_alerts(now)
+
+    def print_transfer_summary(self, now: datetime, cutoff: datetime) -> None:
+        """直近1時間の platform 別「平均転送量 / 平均ページロード回数」。帯域とリロード頻度の判断材料。"""
+        recent = [sample for sample in self.transfer_samples if sample[0] >= cutoff]
+        self.transfer_samples = [s for s in self.transfer_samples if s[0] >= now - timedelta(hours=HISTORY_HOURS)]
+        if not recent:
+            return
+        by_platform: dict[str, list[tuple[datetime, str, float, int, int, int, int]]] = {}
+        for sample in recent:
+            by_platform.setdefault(sample[1], []).append(sample)
+        for platform, samples in sorted(by_platform.items()):
+            n = len(samples)
+            mb = sum(s[2] for s in samples) / n
+            loads = sum(s[3] for s in samples) / n
+            reloads = sum(s[4] for s in samples) / n
+            renav = sum(s[5] for s in samples) / n
+            sbox = sum(s[6] for s in samples) / n
+            print(
+                f"    帯域 {platform}: 平均 {mb:.2f} MB/run（{n} 件、合計 {mb * n:.1f} MB） / "
+                f"ページロード平均 {loads:.1f} 回/run（リロード {reloads:.1f} / 再ナビ {renav:.2f} / 検索窓リトライ {sbox:.2f}）"
+            )
 
     # ------------------------------------------------------------------
     # アラート
@@ -927,6 +962,11 @@ class Scheduler:
         print(
             f"  Google対策 : リトライ最大 {runner.google_retry_max()} 回 / "
             f"breaker 連続 {self.google_breaker_threshold} 件 blocked で発動"
+        )
+        print(
+            f"  アセット遮断: 共通 {dev.describe_blocking(dev.blocked_assets_for(None))}"
+            f" / Google {dev.describe_blocking(dev.blocked_assets_for('google'))}"
+            f"（{dev.BLOCK_ASSETS_ENV} / {dev.BLOCK_ASSETS_GOOGLE_ENV}）"
         )
         print(
             "  即時実行   : "

@@ -124,7 +124,18 @@ def _run_google_with_retries(kwargs: dict, *, keyword: str, use_proxy: bool, all
         )
         time.sleep(op_wait + delay)
 
+        previous = outcome
         outcome = asyncio.run(_search(**kwargs))
+        outcome.add_transfer(
+            {
+                "mb": previous.transfer_mb,
+                "document_loads": previous.page_loads,
+                "reloads": previous.reloads,
+                "renavigations": previous.renavigations,
+                "searchbox_reloads": previous.searchbox_reloads,
+                "blocking": outcome.blocking or previous.blocking,
+            }
+        )
         attempt += 1
 
     outcome.attempts = attempt
@@ -254,7 +265,8 @@ async def _search(
     if use_proxy and proxy is None and not quiet:
         print("  ! SOAX の環境変数が未設定のため、プロキシ無しで実行します。")
 
-    return await engine(
+    dev.take_last_transfer()  # 前回分が残っていても混ぜない
+    outcome = await engine(
         keyword=keyword,
         lat=lat,
         lng=lng,
@@ -263,6 +275,8 @@ async def _search(
         headless=headless,
         screenshot_path=screenshot_path,
     )
+    outcome.add_transfer(dev.take_last_transfer())
+    return outcome
 
 
 def should_retry(outcome: dev.SearchOutcome, platform: Optional[str] = None) -> bool:
@@ -339,6 +353,16 @@ def run_search(
     # ここに来た時点で前の Chrome プロセスは終了している（同時に2つは動かさない）。
     retry = asyncio.run(_search(**kwargs))
     retry.attempts = 2
+    retry.add_transfer(
+        {
+            "mb": outcome.transfer_mb,
+            "document_loads": outcome.page_loads,
+            "reloads": outcome.reloads,
+            "renavigations": outcome.renavigations,
+            "searchbox_reloads": outcome.searchbox_reloads,
+            "blocking": retry.blocking or outcome.blocking,
+        }
+    )
     retry.note(
         f"リトライ: 1回目 status={first_status}"
         + (f"/{first_error}" if first_error else "")
@@ -395,6 +419,12 @@ def print_outcome(outcome: dev.SearchOutcome, *, indent: str = "  ") -> None:
         print(f"{indent}エラー     : {ERROR_LABELS.get(outcome.error, outcome.error)}")
     if outcome.status != "ok":
         print(f"{indent}最終段階   : {dev.last_stage()}")
+    print(
+        f"{indent}転送量     : {outcome.transfer_mb:.2f} MB（ブロック: {outcome.blocking or '-'}"
+        f"{'、' + str(outcome.attempts) + ' 試行の合計' if outcome.attempts > 1 else ''}）"
+        f" / ページロード回数: {outcome.page_loads}"
+        f"（リロード {outcome.reloads} / 再ナビ {outcome.renavigations} / 検索窓リトライ {outcome.searchbox_reloads}）"
+    )
     if outcome.screenshot_path:
         print(f"{indent}スクショ   : {outcome.screenshot_path}（デバッグ用・未保存）")
     for note in outcome.notes:
