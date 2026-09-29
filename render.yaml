@@ -48,14 +48,17 @@ services:
       - key: SOAX_REGION_ENABLED
         value: "1"
 
-      # --- Google だけ検知されるときの対処（既定は無効）---
+      # --- Google だけ検知されるときの対処（mob / region 省略を正とする）---
+      # res / region ありだと Google が BOT 検知で全滅するため、ここで mob / 1 に固定する。
+      # ダッシュボードで変えても Blueprint 同期でこの値に戻るので、変えるときはここを直す。
       # Google のときだけ使うプール。res=住宅 / mob=モバイル。
-      # モバイルは帯域単価が高いことがあるので、切り替えたら使用量を見ること。
+      # モバイルは帯域単価が高いことがあるので、使用量を見ること。
       - key: SOAX_GOOGLE_NETWORK
-        value: res
+        value: mob
       # 1 で Google のときだけ region を外して country-jp のみにする
+      # （地点は geolocation override で決まる）
       - key: SOAX_GOOGLE_OMIT_REGION
-        value: "0"
+        value: "1"
       # Google のときだけローテート間隔を変える（空なら SOAX_ROTATE_SECONDS）
       - key: SOAX_GOOGLE_ROTATE_SECONDS
         value: ""
