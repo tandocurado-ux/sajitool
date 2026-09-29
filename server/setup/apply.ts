@@ -10,6 +10,26 @@ export type ApplyResult =
   | { ok: true; summary: BulkSetupSummary }
   | { ok: false; error: string; progress: string };
 
+/**
+ * 呼び出し元ごとの違い。省略すれば、まとめて登録・新規登録の従来の動作になる。
+ */
+export type ApplyOptions = {
+  /** 実験モード（SAJI_GOOGLE_PC_ENABLED=1）。true のときだけ Google × pc も作る。 */
+  googlePc?: boolean;
+  /**
+   * 自動分散の開始位置。登録済みの件数を渡すと、前回の続きの枠から割り振る。
+   * 少数ずつ何度も登録しても、毎回同じ枠（先頭）に固まらない。
+   */
+  spreadOffset?: number;
+  /** 作成するスケジュール数の上限（消化能力）。超えた分は作らずに件数だけ返す。 */
+  maxSchedules?: number;
+  /**
+   * 同じ keyword × platform の行が複数あるとき、この id を対象にする。
+   * 「計測を開始」で押した行とは別の行にスケジュールが付くのを防ぐ。
+   */
+  preferKeywordId?: string;
+};
+
 function emptySummary(): BulkSetupSummary {
   return {
     keywordsCreated: 0,
@@ -17,6 +37,8 @@ function emptySummary(): BulkSetupSummary {
     regionsCreated: 0,
     schedulesCreated: 0,
     schedulesSkipped: 0,
+    schedulesCreatedByPlatform: {},
+    schedulesOmitted: 0,
   };
 }
 
@@ -31,7 +53,8 @@ function describeProgress(summary: BulkSetupSummary): string {
 /**
  * キーワード・地域・スケジュールを作る本体。
  *
- * まとめて登録（既存顧客への追加）と新規顧客登録の両方から呼ぶ。
+ * まとめて登録（既存顧客への追加）、新規顧客登録、キーワード単位の計測開始
+ * （server/setup/start.ts）から呼ぶ。
  * 重複判定（同じ keyword × platform、同じ keyword × region × device）は
  * ここにしかない。認証と所有権の確認は呼び出し側の責任。
  *
@@ -40,6 +63,7 @@ function describeProgress(summary: BulkSetupSummary): string {
 export async function applyBulkSetup(
   supabase: SupabaseClient,
   input: BulkSetupInput,
+  options: ApplyOptions = {},
 ): Promise<ApplyResult> {
   const summary = emptySummary();
   const fail = (message: string): ApplyResult => ({
@@ -61,7 +85,10 @@ export async function applyBulkSetup(
     return fail(`キーワードの確認に失敗しました: ${existingKeywords.error.message}`);
   }
   for (const row of existingKeywords.data ?? []) {
-    keywordIdByKey.set(keywordKey(row.keyword, row.platform), String(row.id));
+    const key = keywordKey(row.keyword, row.platform);
+    // 指定された行があれば、同じ keyword × platform の別の行で上書きしない。
+    if (options.preferKeywordId && keywordIdByKey.get(key) === options.preferKeywordId) continue;
+    keywordIdByKey.set(key, String(row.id));
   }
 
   const missingKeywords: {
@@ -179,23 +206,34 @@ export async function applyBulkSetup(
     times: string[];
     enabled: boolean;
   }[] = [];
+  const rowPlatforms: string[] = [];
 
   // 自動分散のときは、作る順に15分枠へ均等に割り振る。
   // 枠数と互いに素な歩幅で飛ばすので、同じキーワードの数パターンが
   // 隣り合う枠に固まらない。回転数ぶんの時刻を1スケジュールに入れる。
   const spreadSlots = input.timeMode === "spread" ? input.spreadSlots : null;
-  let assigned = 0;
+  let assigned = Math.max(0, Math.trunc(options.spreadOffset ?? 0));
+  const maxSchedules =
+    options.maxSchedules === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, Math.trunc(options.maxSchedules));
 
   for (const keyword of input.keywords) {
     for (const platform of input.platforms) {
       const keywordId = keywordIdByKey.get(keywordKey(keyword, platform));
       if (!keywordId) continue;
-      // Google は mobile のみ（pc は作らない）。Yahoo! は選んだデバイス全部。
-      const devices = devicesForPlatform(platform, input.devices);
+      // Google は mobile のみ（pc は実験モードのときだけ）。Yahoo! は選んだデバイス全部。
+      const devices = devicesForPlatform(platform, input.devices, {
+        googlePc: options.googlePc,
+      });
       for (const regionId of regionIds) {
         for (const device of devices) {
           if (existingScheduleKeys.has(scheduleKey(keywordId, regionId, device))) {
             summary.schedulesSkipped += 1;
+            continue;
+          }
+          if (scheduleRows.length >= maxSchedules) {
+            summary.schedulesOmitted += 1;
             continue;
           }
           const times = spreadSlots
@@ -209,6 +247,7 @@ export async function applyBulkSetup(
             times,
             enabled: true,
           });
+          rowPlatforms.push(platform);
         }
       }
     }
@@ -223,6 +262,10 @@ export async function applyBulkSetup(
       return fail(`スケジュールの登録に失敗しました: ${inserted.error.message}`);
     }
     summary.schedulesCreated = inserted.data?.length ?? 0;
+    for (const platform of rowPlatforms) {
+      summary.schedulesCreatedByPlatform[platform] =
+        (summary.schedulesCreatedByPlatform[platform] ?? 0) + 1;
+    }
   }
 
   return { ok: true, summary };

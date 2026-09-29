@@ -6,28 +6,63 @@ import { getUserFrom } from "@/server/auth/queries";
 import { isClientOwned } from "@/server/clients/queries";
 import { parseId } from "@/lib/parse";
 import type { ActionState } from "@/lib/action-state";
+import {
+  initialStartMeasurementState,
+  wantsStartMeasurement,
+  type StartMeasurementState,
+} from "@/server/setup/schema";
+import { startMeasurement } from "@/server/setup/start";
 import { parseKeywordInput } from "./schema";
 
+/**
+ * キーワードを1件登録する。
+ *
+ * 「登録と同時に計測を開始する」が ON なら、その顧客の登録済み地域 × 許可デバイスの
+ * スケジュールも作る（時間帯に自動分散。1日の消化能力に収まる件数まで）。
+ * OFF なら従来どおりキーワードだけを登録する。
+ */
 export async function addKeyword(
-  _prevState: ActionState,
+  _prevState: StartMeasurementState,
   formData: FormData,
-): Promise<ActionState> {
+): Promise<StartMeasurementState> {
+  const fail = (error: string): StartMeasurementState => ({
+    ...initialStartMeasurementState,
+    error,
+  });
   const parsed = parseKeywordInput(formData);
-  if (!parsed.ok) return { error: parsed.error };
+  if (!parsed.ok) return fail(parsed.error);
 
   const supabase = await createSupabaseServerClient();
   const user = await getUserFrom(supabase);
-  if (!user) return { error: "ログインが必要です。" };
+  if (!user) return fail("ログインが必要です。");
 
   if (!(await isClientOwned(supabase, parsed.data.client_id))) {
-    return { error: "この顧客を操作する権限がありません。" };
+    return fail("この顧客を操作する権限がありません。");
+  }
+
+  if (wantsStartMeasurement(formData)) {
+    const state = await startMeasurement(supabase, {
+      clientId: parsed.data.client_id,
+      keyword: parsed.data.keyword,
+      platform: parsed.data.platform,
+      timing: null,
+      capToCapacity: true,
+    });
+    if (state.error) return state;
+    revalidatePath(`/clients/${parsed.data.client_id}`);
+    revalidatePath(`/clients/${parsed.data.client_id}/setup`);
+    return state;
   }
 
   const { error } = await supabase.from("keywords").insert(parsed.data);
-  if (error) return { error: `キーワードの追加に失敗しました: ${error.message}` };
+  if (error) return fail(`キーワードの追加に失敗しました: ${error.message}`);
 
   revalidatePath(`/clients/${parsed.data.client_id}`);
-  return { error: null };
+  return {
+    ...initialStartMeasurementState,
+    platform: parsed.data.platform,
+    notice: "キーワードを登録しました（スケジュールは作成していません）。",
+  };
 }
 
 export async function removeKeyword(

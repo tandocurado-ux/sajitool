@@ -2,6 +2,7 @@ import { listClients } from "@/server/clients/queries";
 import { listKeywordsByClientIds } from "@/server/keywords/queries";
 import { listSchedulesByKeywordIds } from "@/server/schedules/queries";
 import { isAllowedCombination } from "@/lib/device-policy";
+import { devicePolicyOptions } from "@/server/device-policy";
 import type { Device, Platform } from "@/lib/types";
 
 /** platform → 1日の実行回数（有効なスケジュールの times の総数）。 */
@@ -12,7 +13,7 @@ export type DailyRunsByPlatform = Record<string, number>;
  *
  * 計測エンジンは全顧客のスケジュールを1本で消化するので、消化能力との比較は
  * 顧客単位ではなくアカウント全体で見る必要がある。無効なスケジュールと、
- * 実行されない組み合わせ（Google × pc）は数えない。
+ * 実行されない組み合わせ（Google × pc。実験モードのときは数える）は数えない。
  */
 export async function getDailyRunsByPlatform(): Promise<DailyRunsByPlatform> {
   const clients = await listClients();
@@ -21,12 +22,13 @@ export async function getDailyRunsByPlatform(): Promise<DailyRunsByPlatform> {
   const schedules = await listSchedulesByKeywordIds(keywords.map((keyword) => keyword.id));
   const platformByKeyword = new Map(keywords.map((keyword) => [keyword.id, keyword.platform]));
 
+  const policy = devicePolicyOptions();
   const runs: DailyRunsByPlatform = {};
   for (const schedule of schedules) {
     if (!schedule.enabled) continue;
     const platform = platformByKeyword.get(schedule.keyword_id);
     if (!platform) continue;
-    if (!isAllowedCombination(platform as Platform, schedule.device as Device)) continue;
+    if (!isAllowedCombination(platform as Platform, schedule.device as Device, policy)) continue;
     const times = Array.isArray(schedule.times) ? schedule.times.length : 0;
     runs[platform] = (runs[platform] ?? 0) + times;
   }

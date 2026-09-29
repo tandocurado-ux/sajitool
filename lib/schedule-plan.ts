@@ -285,3 +285,32 @@ export function suggestSpread(
   }
   return build(1, FULL_DAY_SLOTS, true);
 }
+
+/**
+ * 1日の消化能力に収まる範囲で、あと何件のスケジュールを足せるか。
+ *
+ * 判定は computeDailyCapacity（platform 単体の上限と、逐次実行を前提にした合計）を
+ * そのまま使う。すでに超過しているなら 0。自動でスケジュールを作る経路
+ * （キーワード登録時の自動スケジュール化）が、際限なく作らないために使う。
+ */
+export function maxAddableSchedules(
+  platform: string,
+  wanted: number,
+  rotations: number,
+  existingRunsByPlatform: Partial<Record<string, number>> = {},
+): number {
+  const perSchedule = Math.max(1, Math.trunc(rotations));
+  const fits = (count: number) =>
+    !computeDailyCapacity({ [platform]: count * perSchedule }, existingRunsByPlatform).over;
+
+  let low = 0;
+  let high = Math.max(0, Math.trunc(wanted));
+  if (fits(high)) return high;
+  // fits は件数に対して単調（増やすほど超過しやすい）なので二分探索でよい。
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(middle)) low = middle;
+    else high = middle - 1;
+  }
+  return fits(low) ? low : 0;
+}

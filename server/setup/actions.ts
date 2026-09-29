@@ -5,12 +5,17 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getUserFrom } from "@/server/auth/queries";
 import { isClientOwned } from "@/server/clients/queries";
 import { enqueueImmediateRun, findFirstScheduleId } from "@/server/immediate/queue";
+import type { Platform } from "@/lib/types";
 import { applyBulkSetup } from "./apply";
+import { startMeasurement } from "./start";
 import {
   initialBulkSetupState,
+  initialStartMeasurementState,
   parseBulkSetupInput,
+  parseTimingFields,
   wantsImmediateTest,
   type BulkSetupState,
+  type StartMeasurementState,
 } from "./schema";
 
 export async function bulkCreateSchedules(
@@ -71,4 +76,54 @@ export async function bulkCreateSchedules(
     immediateRequestId,
     immediateError,
   };
+}
+
+/**
+ * 詳細画面の「このキーワードで計測を開始」。
+ * その顧客の登録済み地域 × 許可デバイス × 選んだ時刻設定でスケジュールを作る。
+ */
+export async function startKeywordMeasurement(
+  _prevState: StartMeasurementState,
+  formData: FormData,
+): Promise<StartMeasurementState> {
+  const fail = (error: string): StartMeasurementState => ({
+    ...initialStartMeasurementState,
+    error,
+  });
+  const keywordId = String(formData.get("keyword_id") ?? "").trim();
+  if (!keywordId) return fail("キーワードが指定されていません。");
+
+  const timing = parseTimingFields(formData);
+  if (!timing.ok) return fail(timing.error);
+
+  const supabase = await createSupabaseServerClient();
+  const user = await getUserFrom(supabase);
+  if (!user) return fail("ログインが必要です。");
+
+  // 所有権: keywords → clients。RLS で他人の行は見えない。
+  const keyword = await supabase
+    .from("keywords")
+    .select("id, client_id, keyword, platform")
+    .eq("id", keywordId)
+    .maybeSingle();
+  if (keyword.error || !keyword.data) return fail("キーワードが見つかりません。");
+
+  const clientId = String(keyword.data.client_id);
+  if (!(await isClientOwned(supabase, clientId))) {
+    return fail("このキーワードを操作する権限がありません。");
+  }
+
+  const state = await startMeasurement(supabase, {
+    clientId,
+    keyword: String(keyword.data.keyword),
+    platform: String(keyword.data.platform) as Platform,
+    keywordId,
+    timing: timing.data,
+    capToCapacity: false,
+  });
+  if (state.error) return state;
+
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath(`/clients/${clientId}/setup`);
+  return state;
 }

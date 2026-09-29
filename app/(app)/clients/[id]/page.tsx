@@ -4,14 +4,16 @@ import { getClientById } from "@/server/clients/queries";
 import { listKeywords } from "@/server/keywords/queries";
 import { listRegions } from "@/server/regions/queries";
 import { listSchedulesByKeywordIds } from "@/server/schedules/queries";
-import { removeKeyword } from "@/server/keywords/actions";
 import { removeRegion } from "@/server/regions/actions";
 import { removeSchedule } from "@/server/schedules/actions";
 import { AddKeywordForm } from "@/components/add-keyword-form";
+import { KeywordList, type KeywordRow } from "@/components/keyword-list";
 import { AddRegionForm } from "@/components/add-region-form";
 import { AddScheduleForm } from "@/components/add-schedule-form";
 import { RespreadTool } from "@/components/respread-tool";
 import { getDailyRunsByPlatform } from "@/server/schedules/capacity";
+import { googlePcExperimentEnabled } from "@/server/device-policy";
+import { allowedDevicesFor, isAllowedCombination } from "@/lib/device-policy";
 import { ImmediateRunButton, ImmediateRunStatus } from "@/components/immediate-run";
 import { ScheduleToggle } from "@/components/schedule-toggle";
 import { ClientNameEditor } from "@/components/client-name-editor";
@@ -152,9 +154,44 @@ export default async function ClientDetailPage(
   }
 
   const sortedTimes = [...usedTimes].sort();
-  const unusedKeywords = keywords.filter(
-    (keyword) => !schedulesByKeyword.has(keyword.id),
-  ).length;
+
+  // キーワードごとの計測状況。「計測中」は実際に実行されるスケジュール
+  // （有効 かつ 計測対象のデバイス）が1件以上あること。
+  // 無効なものや Google × pc しか無いキーワードは、登録があっても未計測として扱う。
+  const googlePc = googlePcExperimentEnabled();
+  const scheduleKeys = new Set(
+    schedules.map(
+      (schedule) => `${schedule.keyword_id}|${schedule.region_id}|${schedule.device}`,
+    ),
+  );
+  const activeByKeyword = new Map<string, number>();
+  for (const schedule of schedules) {
+    const keyword = keywordById.get(schedule.keyword_id);
+    if (!keyword || !schedule.enabled) continue;
+    if (!isAllowedCombination(keyword.platform, schedule.device, { googlePc })) continue;
+    activeByKeyword.set(keyword.id, (activeByKeyword.get(keyword.id) ?? 0) + 1);
+  }
+  const keywordRows: KeywordRow[] = keywords.map((keyword) => {
+    // 「計測を開始」で作られるのは、登録済みの地域 × 許可デバイスのうち未登録の組み合わせ。
+    let toCreate = 0;
+    let toSkip = 0;
+    for (const region of regions) {
+      for (const device of allowedDevicesFor(keyword.platform, { googlePc })) {
+        if (scheduleKeys.has(`${keyword.id}|${region.id}|${device}`)) toSkip += 1;
+        else toCreate += 1;
+      }
+    }
+    return {
+      id: keyword.id,
+      keyword: keyword.keyword,
+      platform: keyword.platform,
+      scheduleCount: schedulesByKeyword.get(keyword.id) ?? 0,
+      activeCount: activeByKeyword.get(keyword.id) ?? 0,
+      toCreate,
+      toSkip,
+    };
+  });
+  const unmeasuredKeywords = keywordRows.filter((row) => row.activeCount === 0).length;
   const unusedRegions = regions.filter(
     (region) => !schedulesByRegion.has(region.id),
   ).length;
@@ -210,9 +247,9 @@ export default async function ClientDetailPage(
                 {PLATFORM_LABELS.yahoo} {keywordsByPlatform.get("yahoo") ?? 0}
               </span>
             </dd>
-            {unusedKeywords > 0 ? (
+            {unmeasuredKeywords > 0 ? (
               <dd className="mt-1 text-xs text-warn">
-                未使用 {unusedKeywords} 件
+                未計測 {unmeasuredKeywords} 件
               </dd>
             ) : null}
           </div>
@@ -272,48 +309,33 @@ export default async function ClientDetailPage(
             <h2 className="mb-3 text-sm font-semibold tracking-tight text-fg">
               キーワードを追加
             </h2>
-            <AddKeywordForm clientId={id} />
+            <AddKeywordForm clientId={id} regionCount={regions.length} googlePc={googlePc} />
           </section>
 
           <section className={cardClass}>
             <h2 className="mb-3 text-sm font-semibold tracking-tight text-fg">
               登録済みキーワード
             </h2>
+            {unmeasuredKeywords > 0 ? (
+              <p className="mb-2 text-xs font-medium text-warn">
+                {unmeasuredKeywords} 件のキーワードが計測されていません。「計測を開始」で
+                登録済みの地域にスケジュールを作れます。
+              </p>
+            ) : null}
             {keywords.length === 0 ? (
               <p className="text-sm text-subtle">
                 まだキーワードが登録されていません。
               </p>
             ) : (
-              <ul className="divide-y divide-line">
-                {keywords.map((keyword) => (
-                  <li
-                    key={keyword.id}
-                    className="flex items-center justify-between gap-4 py-3"
-                  >
-                    <div>
-                      <p className="text-sm font-medium text-fg">
-                        {keyword.keyword}
-                      </p>
-                      <p className="text-xs text-subtle">
-                        {PLATFORM_LABELS[keyword.platform] ?? keyword.platform}
-                        {" ・ "}
-                        スケジュール {schedulesByKeyword.get(keyword.id) ?? 0} 件
-                      </p>
-                      {schedulesByKeyword.has(keyword.id) ? null : (
-                        <span className="mt-1 inline-block rounded-md border border-warn-line bg-warn-soft px-2 py-0.5 text-xs font-medium text-warn">
-                          未使用
-                        </span>
-                      )}
-                    </div>
-                    <DeleteButton
-                      action={removeKeyword}
-                      id={keyword.id}
-                      clientId={id}
-                      confirmMessage={`「${keyword.keyword}」を削除します。よろしいですか？`}
-                    />
-                  </li>
-                ))}
-              </ul>
+              <KeywordList
+                clientId={id}
+                keywords={keywordRows}
+                regionCount={regions.length}
+                googlePc={googlePc}
+                existingRunsByPlatform={
+                  unmeasuredKeywords > 0 ? await getDailyRunsByPlatform() : {}
+                }
+              />
             )}
           </section>
         </>

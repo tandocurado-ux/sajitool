@@ -18,20 +18,38 @@ export const ALLOWED_DEVICES: Record<Platform, readonly Device[]> = {
 export const GOOGLE_DEVICE_NOTE =
   "Google は mobile のみ計測します（pc は BOT 検知されやすいため）";
 
-export function allowedDevicesFor(platform: Platform): readonly Device[] {
-  return ALLOWED_DEVICES[platform] ?? ["pc", "mobile"];
+/**
+ * 実験フラグ（SAJI_GOOGLE_PC_ENABLED=1）のときだけ true を渡す。
+ * env はサーバーでしか読めないので、値は server/device-policy.ts から受け取る。
+ * 省略時は従来どおり（Google は mobile のみ）。
+ */
+export type DevicePolicyOptions = { googlePc?: boolean };
+
+const ALL_DEVICES: readonly Device[] = ["pc", "mobile"];
+
+export function allowedDevicesFor(
+  platform: Platform,
+  options: DevicePolicyOptions = {},
+): readonly Device[] {
+  if (platform === "google" && options.googlePc) return ALL_DEVICES;
+  return ALLOWED_DEVICES[platform] ?? ALL_DEVICES;
 }
 
-export function isAllowedCombination(platform: Platform, device: Device): boolean {
-  return allowedDevicesFor(platform).includes(device);
+export function isAllowedCombination(
+  platform: Platform,
+  device: Device,
+  options: DevicePolicyOptions = {},
+): boolean {
+  return allowedDevicesFor(platform, options).includes(device);
 }
 
 /** 選んだデバイスのうち、その platform で作ってよいものだけを返す。 */
 export function devicesForPlatform(
   platform: Platform,
   devices: readonly Device[],
+  options: DevicePolicyOptions = {},
 ): Device[] {
-  return devices.filter((device) => isAllowedCombination(platform, device));
+  return devices.filter((device) => isAllowedCombination(platform, device, options));
 }
 
 /** 選んだ platform の中に Google が含まれるか（pc を無効化する判定）。 */

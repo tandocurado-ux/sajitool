@@ -13,6 +13,7 @@ import {
   readImmediateQueue,
 } from "@/lib/immediate";
 import { GOOGLE_DEVICE_NOTE, isAllowedCombination } from "@/lib/device-policy";
+import { googlePcExperimentEnabled } from "@/server/device-policy";
 import type { Device, Platform } from "@/lib/types";
 
 export type EnqueueResult =
@@ -54,7 +55,7 @@ export async function enqueueImmediateRun(
   // Google × pc は実行しない（登録ガードをすり抜けた既存行への保険）。
   // 実験モード（SAJI_GOOGLE_PC_ENABLED=1。engine 側と同じ名前の env）では即時実行だけ通す。
   // 登録側のガード（作成・一括登録）はこの値では変わらない。
-  const googlePcExperiment = process.env.SAJI_GOOGLE_PC_ENABLED === "1";
+  const googlePcExperiment = googlePcExperimentEnabled();
   if (
     !googlePcExperiment &&
     !isAllowedCombination(String(keyword.data.platform) as Platform, String(schedule.data.device) as Device)

@@ -173,28 +173,16 @@ export type ScheduleSettings = {
   rotations: number;
 };
 
-/** 検索エンジン・デバイス・時刻の設定。2つの画面で同じ入力欄を使う。 */
-export function parseScheduleSettings(
-  formData: FormData,
-): ParseResult<ScheduleSettings> {
-  const platformMode = String(formData.get("platform_mode") ?? "") as PlatformMode;
-  if (!PLATFORM_MODES.includes(platformMode)) {
-    return { ok: false, error: "検索エンジンを選択してください。" };
-  }
+export type TimingSettings = Pick<
+  ScheduleSettings,
+  "timeMode" | "times" | "spreadSlots" | "rotations"
+>;
 
-  const deviceMode = String(formData.get("device_mode") ?? "") as DeviceMode;
-  if (!DEVICE_MODES.includes(deviceMode)) {
-    return { ok: false, error: "デバイスを選択してください。" };
-  }
-  // Google は mobile のみ計測する。Google だけを選んで pc 単独だと何も作られないので弾く。
-  // 「両方」は Google 側が mobile だけになる（apply 側で絞る）。
-  if (platformMode === "google" && deviceMode === "pc") {
-    return {
-      ok: false,
-      error: "Google は mobile のみ計測します（pc は BOT 検知されやすいため）。デバイスは「モバイル」か「両方」を選んでください。",
-    };
-  }
-
+/**
+ * 時刻の設定だけを読む（components/setup/schedule-timing-fields.tsx の入力欄）。
+ * まとめて登録・新規登録・「計測を開始」で同じ読み方をする。
+ */
+export function parseTimingFields(formData: FormData): ParseResult<TimingSettings> {
   const timeMode = String(formData.get("time_mode") ?? "fixed") as TimeMode;
   if (!TIME_MODES.includes(timeMode)) {
     return { ok: false, error: "時刻の指定方法を選択してください。" };
@@ -225,15 +213,40 @@ export function parseScheduleSettings(
     }
   }
 
+  return { ok: true, data: { timeMode, times, spreadSlots, rotations } };
+}
+
+/** 検索エンジン・デバイス・時刻の設定。2つの画面で同じ入力欄を使う。 */
+export function parseScheduleSettings(
+  formData: FormData,
+): ParseResult<ScheduleSettings> {
+  const platformMode = String(formData.get("platform_mode") ?? "") as PlatformMode;
+  if (!PLATFORM_MODES.includes(platformMode)) {
+    return { ok: false, error: "検索エンジンを選択してください。" };
+  }
+
+  const deviceMode = String(formData.get("device_mode") ?? "") as DeviceMode;
+  if (!DEVICE_MODES.includes(deviceMode)) {
+    return { ok: false, error: "デバイスを選択してください。" };
+  }
+  // Google は mobile のみ計測する。Google だけを選んで pc 単独だと何も作られないので弾く。
+  // 「両方」は Google 側が mobile だけになる（apply 側で絞る）。
+  if (platformMode === "google" && deviceMode === "pc") {
+    return {
+      ok: false,
+      error: "Google は mobile のみ計測します（pc は BOT 検知されやすいため）。デバイスは「モバイル」か「両方」を選んでください。",
+    };
+  }
+
+  const timing = parseTimingFields(formData);
+  if (!timing.ok) return timing;
+
   return {
     ok: true,
     data: {
       platforms: platformsFor(platformMode),
       devices: devicesFor(deviceMode),
-      timeMode,
-      times,
-      spreadSlots,
-      rotations,
+      ...timing.data,
     },
   };
 }
@@ -395,6 +408,10 @@ export type BulkSetupSummary = {
   regionsCreated: number;
   schedulesCreated: number;
   schedulesSkipped: number;
+  /** 作成したスケジュール数の platform 別内訳。 */
+  schedulesCreatedByPlatform: Record<string, number>;
+  /** 作成数の上限（消化能力）に達したため作らなかった件数。上限なしなら常に 0。 */
+  schedulesOmitted: number;
 };
 
 export type BulkSetupState = {
@@ -506,3 +523,35 @@ export function derivePreviousSettings(
     scheduleCount: schedules.length,
   };
 }
+
+// --------------------------------------------------------------------------
+// キーワード単位の計測開始（詳細画面の「計測を開始」／キーワード登録時の自動作成）
+// --------------------------------------------------------------------------
+
+export type StartMeasurementState = {
+  error: string | null;
+  /** 成功時に出す1行（何を何件作ったか）。 */
+  notice: string | null;
+  warnings: string[];
+  summary: BulkSetupSummary | null;
+  /** どの platform のキーワードだったか（結果の内訳表示に使う）。 */
+  platform: Platform | null;
+};
+
+export const initialStartMeasurementState: StartMeasurementState = {
+  error: null,
+  notice: null,
+  warnings: [],
+  summary: null,
+  platform: null,
+};
+
+/** キーワード登録フォームの「登録と同時に計測を開始する」。 */
+export function wantsStartMeasurement(formData: FormData): boolean {
+  return String(formData.get("start_measurement") ?? "") === "1";
+}
+
+/** 自動でスケジュールを作るときの時刻設定（時間帯に自動分散・1日1回）。 */
+export const AUTO_SPREAD_START = "06:00";
+export const AUTO_SPREAD_END = "23:00";
+export const AUTO_ROTATIONS = 1;
