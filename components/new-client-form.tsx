@@ -11,7 +11,7 @@ import {
   type PlatformMode,
 } from "@/server/setup/schema";
 import { computeSchedulePlan, type SpreadSuggestion } from "@/lib/schedule-plan";
-import { devicesForPlatform, includesGoogle } from "@/lib/device-policy";
+import { GOOGLE_DEVICE, blockedDeviceFor, devicesForPlatform } from "@/lib/device-policy";
 import { FormError } from "./form-error";
 import { isRegionDraftFilled, type RegionDraft } from "./region-picker";
 import { DeviceModeField } from "./setup/device-mode-field";
@@ -31,9 +31,11 @@ import { cardClass, inputClass, labelClass, primaryButtonClass, subtleButtonClas
 type Props = {
   /** アカウント全体で登録済みの1日の実行回数（platform 別）。消化能力の充足率に使う。 */
   existingRunsByPlatform?: Partial<Record<string, number>>;
+  /** 切り戻し用（SAJI_GOOGLE_ALLOW_MOBILE=1）。Google でもモバイルを選べる。 */
+  googleMobile?: boolean;
 };
 
-export function NewClientForm({ existingRunsByPlatform = {} }: Props) {
+export function NewClientForm({ existingRunsByPlatform = {}, googleMobile = false }: Props) {
   const [state, formAction, pending] = useActionState(
     createClientWithSetup,
     initialNewClientState,
@@ -47,25 +49,27 @@ export function NewClientForm({ existingRunsByPlatform = {} }: Props) {
   const [timing, setTiming] = useState<TimingValue>(() =>
     defaultTimingFor(platformsFor("google")),
   );
-  // 既定は Google なので、デバイスの既定は mobile。
-  const [deviceMode, setDeviceMode] = useState<DeviceMode>("mobile");
+  // 既定は Google なので、デバイスの既定は pc。
+  const [deviceMode, setDeviceMode] = useState<DeviceMode>(GOOGLE_DEVICE);
 
   const platforms = platformsFor(platformMode);
   const devices = devicesFor(deviceMode);
   const filledRegions = regionDrafts.filter(isRegionDraftFilled);
 
-  // Google を含む登録で pc 単独は選べない（選んだ状態で Google に切り替えたらモバイルへ）。
+  // Google を含む登録でモバイル単独は選べない（選んだ状態で Google に切り替えたら PC へ）。
   function changePlatformMode(next: PlatformMode) {
     setPlatformMode(next);
-    if (includesGoogle(platformsFor(next)) && deviceMode === "pc") setDeviceMode("mobile");
+    if (deviceMode === blockedDeviceFor(platformsFor(next), { googleMobile })) {
+      setDeviceMode(GOOGLE_DEVICE);
+    }
   }
 
   // 新規顧客なので既存との重複は無い。組み合わせがそのまま作成件数になる。
-  // Google は mobile のみ作られる（pc は数えない）。
+  // Google は pc のみ作られる（mobile は数えない）。
   const toCreate = platforms.reduce(
     (sum, platform) =>
       sum +
-      keywords.length * filledRegions.length * devicesForPlatform(platform, devices).length,
+      keywords.length * filledRegions.length * devicesForPlatform(platform, devices, { googleMobile }).length,
     0,
   );
 
@@ -75,10 +79,10 @@ export function NewClientForm({ existingRunsByPlatform = {} }: Props) {
       Object.fromEntries(
         platforms.map((platform) => [
           platform,
-          keywords.length * filledRegions.length * devicesForPlatform(platform, devices).length,
+          keywords.length * filledRegions.length * devicesForPlatform(platform, devices, { googleMobile }).length,
         ]),
       ),
-    [platforms, keywords.length, filledRegions.length, devices],
+    [platforms, keywords.length, filledRegions.length, devices, googleMobile],
   );
 
   const plan = useMemo(

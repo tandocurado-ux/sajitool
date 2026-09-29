@@ -185,32 +185,74 @@ Yahoo! のフロー・username・リトライ（1回）は従来どおりで変�
   Google mobile は on 3.0 MB / off 6.6 MB。残りの大半は script / stylesheet で、
   レシピの必須リロードが nodriver 既定の ignore_cache=True で全再取得になっている
 
-### Google は mobile のみ計測
+### Google は pc のみ計測
 
-実測で Google × mobile は通り（exit IP 133.106 帯で ok が続く）、Google × pc は
-BOT 検知（/sorry/）が続くため、**Google の pc は登録も実行もしない**（`lib/device-policy.ts`
+UA と UA-CH を揃えた後の実測で、Google × mobile はモバイル版の HTML が返り、結果セレクタ
+（`#rso a h3` 系）が合わず `no_results` になる。Google × pc はデスクトップ版の HTML で結果を
+拾える。そのため **Google は pc で計測し、mobile は登録も実行もしない**（`lib/device-policy.ts`
 と `engine/runner.py` の `ALLOWED_DEVICES`）。Yahoo! は従来どおり pc / mobile の両方。
 
-- 登録 UI: Google を含む登録では pc の選択肢が無効になり、「両方」でも Google 側は mobile だけ作られる。
-  単発追加でも Google のキーワードを選ぶと pc は選べない
-- サーバー: 一括登録の生成で Google × pc を作らず、単発追加と即時実行は Google × pc を弾く
-- エンジン: DB に Google × pc が残っていても `scheduler.py` は積まず
-  「Google の pc はスキップ（mobile のみ計測）」とログに出す（即時実行・run_once も同様）
-- 実験用: `SAJI_GOOGLE_PC_ENABLED=1` でエンジンの Google × pc スキップを外して実行する
-  （Render の環境変数）。即時実行から pc を撃つには Vercel 側にも同じ env を入れる。
-  登録側のガード（作成・一括登録）は変わらない。UA 修正後に pc が通るかを見て、
-  良ければ既定 ON にして mobile 限定を正式に解除する
+- 登録 UI: Google を含む登録ではモバイル単独の選択肢が無効になり、「両方」でも Google 側は pc だけ
+  作られる。単発追加でも Google のキーワードを選ぶとモバイルは選べない
+- サーバー: 一括登録・新規登録・「計測を開始」・キーワード登録時の自動作成は Google × mobile を
+  作らず、単発追加と即時実行は Google × mobile を弾く
+- エンジン: DB に Google × mobile が残っていても `scheduler.py` は積まず
+  「Google の mobile はスキップ（pc のみ計測）」とログに出す（即時実行・run_once も同様）
+- 切り戻し用: `SAJI_GOOGLE_ALLOW_MOBILE=1`（既定 OFF）で Google × mobile も許可する。
+  Render（エンジンが実行する）と Vercel（画面で選べる・作れる）の両方に入れる。
+  このとき「計測を開始」と自動作成は Google に pc と mobile の両方を作る
+- 以前の実験用 `SAJI_GOOGLE_PC_ENABLED` は廃止した（設定が残っていても無視される）
 
-既存の Google × pc を洗い出す SQL（削除は手動で）:
+#### 既存の Google × mobile を pc に移行する
+
+デプロイ後、Google × mobile のスケジュールはエンジンがスキップする。移行するまで Google の計測は
+止まるので、デプロイと同じタイミングで実行する（Supabase の SQL Editor）。
 
 ```sql
-select s.id, c.name as client, k.keyword, k.platform, s.device, s.times, s.enabled, s.created_at
+-- 1) 確認: Google × mobile の一覧と、同じ キーワード × 地域 に pc が既にあるか
+select s.id, c.name as client, k.keyword, r.label as region, s.times, s.enabled,
+       exists (
+         select 1 from schedules p
+         where p.keyword_id = s.keyword_id and p.region_id = s.region_id and p.device = 'pc'
+       ) as pc_exists
 from schedules s
 join keywords k on k.id = s.keyword_id
 join clients c on c.id = k.client_id
-where k.platform = 'google' and s.device = 'pc'
-order by c.name, k.keyword;
+join regions r on r.id = s.region_id
+where k.platform = 'google' and s.device = 'mobile'
+order by c.name, k.keyword, r.label;
+
+-- 2) 移行: pc がまだ無い組み合わせだけ、mobile を pc に書き換える
+--    （時刻・有効/無効・実行履歴はそのまま引き継ぐ）
+update schedules s
+set device = 'pc'
+from keywords k
+where k.id = s.keyword_id
+  and k.platform = 'google'
+  and s.device = 'mobile'
+  and not exists (
+    select 1 from schedules p
+    where p.keyword_id = s.keyword_id and p.region_id = s.region_id and p.device = 'pc'
+  );
+
+-- 3) 残り: pc が既にあったため書き換えなかった mobile（重複）。
+--    実行はされない。削除するかどうかは手動で判断する
+select s.id, c.name as client, k.keyword, r.label as region, s.times, s.enabled
+from schedules s
+join keywords k on k.id = s.keyword_id
+join clients c on c.id = k.client_id
+join regions r on r.id = s.region_id
+where k.platform = 'google' and s.device = 'mobile'
+order by c.name, k.keyword, r.label;
 ```
+
+注意:
+
+- mobile 限定にする前に作った Google × pc が残っていると、デプロイ後に **そのまま実行対象になる**。
+  意図しないものが無いか、先に洗い出す:
+  `select s.id, k.keyword, s.times, s.enabled from schedules s join keywords k on k.id = s.keyword_id where k.platform = 'google' and s.device = 'pc';`
+- 同じ キーワード × 地域 に mobile が2件以上あると、2) で両方が pc になり重複する。1) で確認する
+- 書き換えたスケジュールの過去の実行履歴は、mobile で計測したときのもの
 
 ### 計測の開始（キーワード単位）
 
@@ -219,7 +261,7 @@ order by c.name, k.keyword;
 
 - 顧客詳細の「キーワード」タブ: 各キーワードに「計測中」／「未計測」のバッジを出す。
   「計測中」は **実際に実行されるスケジュール（有効 かつ 計測対象のデバイス）が1件以上ある** こと。
-  スケジュールがあっても、すべて無効、または Google × pc だけのキーワードは「未計測」になる
+  スケジュールがあっても、すべて無効、または Google × mobile だけのキーワードは「未計測」になる
 - 「計測を開始」: そのキーワードについて、登録済みの地域 × 許可デバイスのスケジュールを作る。
   時刻の既定は「時間帯に自動分散」。作成前に件数・1枠あたりの件数・1日の消化能力を表示する
   （まとめて登録と同じプレビュー。消化能力を超えても警告のうえ作成できる）
@@ -227,8 +269,7 @@ order by c.name, k.keyword;
   登録済みの地域 × 許可デバイスのスケジュールを作る。時刻は 06:00〜23:00 の自動分散・1日1回で、
   1枠あたりの推奨上限を超えるときは時間帯を広げる。**1日の消化能力に収まる件数までしか作らず**、
   見送った件数を警告に出す。地域が未登録ならキーワードだけ作り、先に地域を登録するよう促す
-- 許可デバイスは Google が mobile、Yahoo! が pc / mobile。Vercel に `SAJI_GOOGLE_PC_ENABLED=1` が
-  あるときだけ、この2つの経路は Google × pc も作る（まとめて登録・新規登録・単発追加は変わらない）
+- 許可デバイスは Google が pc、Yahoo! が pc / mobile
 - 少数ずつ何度も登録しても同じ枠に固まらないよう、自動分散はアカウント全体の登録済み件数の
   続きの枠から割り振る（`applyBulkSetup` の `spreadOffset`）
 

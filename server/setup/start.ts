@@ -65,7 +65,7 @@ export async function startMeasurement(
   const regionIds = (regions.data ?? []).map((row) => String(row.id));
 
   const policy = devicePolicyOptions();
-  // Google は mobile（実験モードのときは pc も）。Yahoo! は pc / mobile。
+  // Google は pc のみ。Yahoo! は pc / mobile。
   const devices = [...allowedDevicesFor(request.platform, policy)];
   const deviceLabel = devices.map((device) => DEVICE_LABELS[device] ?? device).join("・");
 
@@ -144,7 +144,7 @@ export async function startMeasurement(
       devices,
     },
     {
-      googlePc: policy.googlePc,
+      googleMobile: policy.googleMobile,
       // 登録済みの続きの枠から割り振る（毎回先頭の枠に固まらないように）。
       spreadOffset: existingRuns[request.platform] ?? 0,
       maxSchedules,

@@ -11,6 +11,11 @@ import {
   findMunicipality,
   japanRangeWarning,
 } from "@/lib/japan";
+import {
+  GOOGLE_DEVICE_NOTE,
+  devicesForPlatform,
+  type DevicePolicyOptions,
+} from "@/lib/device-policy";
 import type { Device, Platform } from "@/lib/types";
 import { parseClientInput } from "@/server/clients/schema";
 
@@ -219,6 +224,7 @@ export function parseTimingFields(formData: FormData): ParseResult<TimingSetting
 /** 検索エンジン・デバイス・時刻の設定。2つの画面で同じ入力欄を使う。 */
 export function parseScheduleSettings(
   formData: FormData,
+  policy: DevicePolicyOptions = {},
 ): ParseResult<ScheduleSettings> {
   const platformMode = String(formData.get("platform_mode") ?? "") as PlatformMode;
   if (!PLATFORM_MODES.includes(platformMode)) {
@@ -229,12 +235,15 @@ export function parseScheduleSettings(
   if (!DEVICE_MODES.includes(deviceMode)) {
     return { ok: false, error: "デバイスを選択してください。" };
   }
-  // Google は mobile のみ計測する。Google だけを選んで pc 単独だと何も作られないので弾く。
-  // 「両方」は Google 側が mobile だけになる（apply 側で絞る）。
-  if (platformMode === "google" && deviceMode === "pc") {
+  // Google は pc のみ計測する。Google だけを選んでモバイル単独だと何も作られないので弾く。
+  // 「両方」は Google 側が pc だけになる（apply 側で絞る）。
+  if (
+    platformMode === "google" &&
+    devicesForPlatform("google", devicesFor(deviceMode), policy).length === 0
+  ) {
     return {
       ok: false,
-      error: "Google は mobile のみ計測します（pc は BOT 検知されやすいため）。デバイスは「モバイル」か「両方」を選んでください。",
+      error: `${GOOGLE_DEVICE_NOTE}。デバイスは「PC」か「両方」を選んでください。`,
     };
   }
 
@@ -292,6 +301,7 @@ export function parseRegionsField(formData: FormData): ParseResult<RegionsField>
 
 export function parseBulkSetupInput(
   formData: FormData,
+  policy: DevicePolicyOptions = {},
 ): ParseResult<BulkSetupParsed> {
   const clientId = String(formData.get("client_id") ?? "").trim();
   if (!clientId) return { ok: false, error: "顧客が指定されていません。" };
@@ -302,7 +312,7 @@ export function parseBulkSetupInput(
     return { ok: false, error: "キーワードを1行に1つずつ入力してください。" };
   }
 
-  const settings = parseScheduleSettings(formData);
+  const settings = parseScheduleSettings(formData, policy);
   if (!settings.ok) return settings;
 
   const regions = parseRegionsField(formData);
@@ -349,6 +359,7 @@ export type NewClientParsed = {
  */
 export function parseNewClientSetup(
   formData: FormData,
+  policy: DevicePolicyOptions = {},
 ): ParseResult<NewClientParsed> {
   const client = parseClientInput(formData);
   if (!client.ok) return client;
@@ -371,7 +382,7 @@ export function parseNewClientSetup(
     };
   }
 
-  const settings = parseScheduleSettings(formData);
+  const settings = parseScheduleSettings(formData, policy);
   if (!settings.ok) return settings;
 
   return {

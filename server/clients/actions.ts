@@ -7,6 +7,7 @@ import { getUserFrom } from "@/server/auth/queries";
 import { parseId } from "@/lib/parse";
 import type { ActionState } from "@/lib/action-state";
 import { applyBulkSetup } from "@/server/setup/apply";
+import { devicePolicyOptions } from "@/server/device-policy";
 import { parseNewClientSetup, wantsImmediateTest } from "@/server/setup/schema";
 import { enqueueImmediateRun, findFirstScheduleId } from "@/server/immediate/queue";
 import {
@@ -19,7 +20,8 @@ export async function createClientWithSetup(
   _prevState: NewClientState,
   formData: FormData,
 ): Promise<NewClientState> {
-  const parsed = parseNewClientSetup(formData);
+  const policy = devicePolicyOptions();
+  const parsed = parseNewClientSetup(formData, policy);
   if (!parsed.ok) return { ...initialNewClientState, error: parsed.error };
   const { name, setup, warnings } = parsed.data;
 
@@ -47,7 +49,7 @@ export async function createClientWithSetup(
   let immediateRequestId: string | null = null;
   if (setup) {
     const input = { ...setup, client_id: clientId };
-    const result = await applyBulkSetup(supabase, input);
+    const result = await applyBulkSetup(supabase, input, policy);
     if (!result.ok) {
       revalidatePath("/clients");
       revalidatePath(`/clients/${clientId}`);

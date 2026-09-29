@@ -13,13 +13,13 @@ type Props = {
   clientId: string;
   /** この顧客の登録済み地域の数。0 ならスケジュールは作れない。 */
   regionCount: number;
-  /** 実験モード（SAJI_GOOGLE_PC_ENABLED=1）。Google × pc も作る。 */
-  googlePc?: boolean;
+  /** 切り戻し用（SAJI_GOOGLE_ALLOW_MOBILE=1）。Google × mobile も作る。 */
+  googleMobile?: boolean;
 };
 
 const PLATFORMS: Platform[] = ["google", "yahoo"];
 
-export function AddKeywordForm({ clientId, regionCount, googlePc = false }: Props) {
+export function AddKeywordForm({ clientId, regionCount, googleMobile = false }: Props) {
   const [state, formAction, pending] = useActionState(addKeyword, initialStartMeasurementState);
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -72,7 +72,7 @@ export function AddKeywordForm({ clientId, regionCount, googlePc = false }: Prop
           <p className="mt-1 text-xs text-subtle">
             登録済みの地域 {regionCount} 件 × 計測対象のデバイスでスケジュールを作り、時間帯に自動分散します（
             {PLATFORMS.map((platform) => {
-              const devices = allowedDevicesFor(platform, { googlePc });
+              const devices = allowedDevicesFor(platform, { googleMobile });
               return `${PLATFORM_LABELS[platform]}: ${devices
                 .map((device) => DEVICE_LABELS[device])
                 .join("・")} で ${regionCount * devices.length} 件`;

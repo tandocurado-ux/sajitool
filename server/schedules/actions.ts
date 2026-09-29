@@ -8,6 +8,7 @@ import { parseId } from "@/lib/parse";
 import type { ActionState } from "@/lib/action-state";
 import { parseScheduleInput } from "./schema";
 import { GOOGLE_DEVICE_NOTE, isAllowedCombination } from "@/lib/device-policy";
+import { devicePolicyOptions } from "@/server/device-policy";
 import type { Device, Platform } from "@/lib/types";
 
 /**
@@ -56,9 +57,9 @@ export async function addSchedule(
     parsed.data.region_id,
   );
   if (!owned.ok) return { error: owned.error };
-  // 画面をすり抜けても Google × pc は DB に入れない。
-  if (!isAllowedCombination(owned.platform, parsed.data.device as Device)) {
-    return { error: `${GOOGLE_DEVICE_NOTE}。デバイスは「モバイル」を選んでください。` };
+  // 画面をすり抜けても Google × mobile は DB に入れない。
+  if (!isAllowedCombination(owned.platform, parsed.data.device as Device, devicePolicyOptions())) {
+    return { error: `${GOOGLE_DEVICE_NOTE}。デバイスは「PC」を選んでください。` };
   }
 
   const { error } = await supabase

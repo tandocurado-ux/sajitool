@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { NewClientForm } from "@/components/new-client-form";
 import { getDailyRunsByPlatform } from "@/server/schedules/capacity";
+import { googleMobileAllowed } from "@/server/device-policy";
 
 export const metadata = {
   title: "顧客を追加 | サジェツール",
@@ -24,7 +25,10 @@ export default async function NewClientPage() {
         </p>
       </div>
 
-      <NewClientForm existingRunsByPlatform={existingRunsByPlatform} />
+      <NewClientForm
+        existingRunsByPlatform={existingRunsByPlatform}
+        googleMobile={googleMobileAllowed()}
+      />
     </div>
   );
 }

@@ -5,27 +5,35 @@ import {
   DEVICE_MODE_LABELS,
   type DeviceMode,
 } from "@/server/setup/schema";
-import { GOOGLE_DEVICE_NOTE, includesGoogle } from "@/lib/device-policy";
+import { GOOGLE_DEVICE_NOTE, blockedDeviceFor, includesGoogle } from "@/lib/device-policy";
 import type { Platform } from "@/lib/types";
 import { labelClass } from "../ui";
 
 type Props = {
   value: DeviceMode;
   onChange: (mode: DeviceMode) => void;
-  /** 選択中の検索エンジン。Google を含むなら pc は選べない。 */
+  /** 選択中の検索エンジン。Google を含むならモバイル単独は選べない。 */
   platforms?: readonly Platform[];
+  /** 切り戻し用（SAJI_GOOGLE_ALLOW_MOBILE=1）。Google でもモバイルを選べる。 */
+  googleMobile?: boolean;
 };
 
-export function DeviceModeField({ value, onChange, platforms = [] }: Props) {
-  const googleSelected = includesGoogle(platforms);
+export function DeviceModeField({
+  value,
+  onChange,
+  platforms = [],
+  googleMobile = false,
+}: Props) {
+  const blocked = blockedDeviceFor(platforms, { googleMobile });
+  const googleSelected = includesGoogle(platforms) && blocked !== null;
 
   return (
     <fieldset>
       <legend className={labelClass}>デバイス</legend>
       <div className="flex flex-wrap gap-4">
         {DEVICE_MODES.map((mode) => {
-          // Google を含む登録では pc 単独は作れない（Google 側は何も作られない）。
-          const disabled = googleSelected && mode === "pc";
+          // Google を含む登録ではモバイル単独は作れない（Google 側は何も作られない）。
+          const disabled = mode === blocked;
           return (
             <label
               key={mode}
@@ -51,7 +59,7 @@ export function DeviceModeField({ value, onChange, platforms = [] }: Props) {
       {googleSelected ? (
         <p className="mt-1 text-xs font-medium text-warn">
           {GOOGLE_DEVICE_NOTE}。
-          {value === "both" ? "「両方」でも Google は mobile だけ作成されます。" : ""}
+          {value === "both" ? "「両方」でも Google は PC だけ作成されます。" : ""}
         </p>
       ) : null}
     </fieldset>

@@ -6,6 +6,7 @@ import { listRegions } from "@/server/regions/queries";
 import { listSchedulesByKeywordIds } from "@/server/schedules/queries";
 import { BulkSetupForm } from "@/components/bulk-setup-form";
 import { getDailyRunsByPlatform } from "@/server/schedules/capacity";
+import { googleMobileAllowed } from "@/server/device-policy";
 import { derivePreviousSettings } from "@/server/setup/schema";
 import { formatTime } from "@/lib/parse";
 
@@ -79,6 +80,7 @@ export default async function ClientSetupPage(
         }))}
         previousSettings={previousSettings}
         existingRunsByPlatform={existingRunsByPlatform}
+        googleMobile={googleMobileAllowed()}
       />
     </div>
   );

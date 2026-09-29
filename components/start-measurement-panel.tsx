@@ -23,7 +23,7 @@ type Props = {
   platform: Platform;
   /** この顧客の登録済み地域の数。 */
   regionCount: number;
-  /** この platform で作ってよいデバイス（Google は mobile、実験モードなら pc も）。 */
+  /** この platform で作ってよいデバイス（Google は pc、Yahoo! は pc / mobile）。 */
   devices: readonly Device[];
   /** 新規に作られる件数（登録済みの組み合わせを除く）。 */
   toCreate: number;

@@ -18,18 +18,22 @@ import { inputClass, labelClass, primaryButtonClass } from "./ui";
 type Props = {
   keywords: Keyword[];
   regions: Region[];
+  /** 切り戻し用（SAJI_GOOGLE_ALLOW_MOBILE=1）。Google でもモバイルを選べる。 */
+  googleMobile?: boolean;
 };
 
 const DEVICES: Device[] = ["pc", "mobile"];
 
-export function AddScheduleForm({ keywords, regions }: Props) {
+export function AddScheduleForm({ keywords, regions, googleMobile = false }: Props) {
   const [state, formAction, pending] = useActionState(addSchedule, initialActionState);
   const formRef = useRef<HTMLFormElement>(null);
   const [times, setTimes] = useState<string[]>(["09:00"]);
   const [keywordId, setKeywordId] = useState<string>(keywords[0]?.id ?? "");
 
   const selectedKeyword = keywords.find((keyword) => keyword.id === keywordId) ?? keywords[0];
-  const allowed = selectedKeyword ? allowedDevicesFor(selectedKeyword.platform) : DEVICES;
+  const allowed = selectedKeyword
+    ? allowedDevicesFor(selectedKeyword.platform, { googleMobile })
+    : DEVICES;
   const [device, setDevice] = useState<Device>(allowed[0] ?? "pc");
   // キーワードを変えて今のデバイスが選べなくなったら、選べる方に寄せる。
   const effectiveDevice: Device = allowed.includes(device) ? device : allowed[0];
@@ -53,7 +57,7 @@ export function AddScheduleForm({ keywords, regions }: Props) {
     );
   }
 
-  const googleSelected = selectedKeyword?.platform === "google";
+  const googleSelected = selectedKeyword?.platform === "google" && allowed.length < DEVICES.length;
 
   return (
     <form ref={formRef} action={formAction} className="flex flex-col gap-3">

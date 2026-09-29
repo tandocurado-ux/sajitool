@@ -13,7 +13,7 @@ export type DailyRunsByPlatform = Record<string, number>;
  *
  * 計測エンジンは全顧客のスケジュールを1本で消化するので、消化能力との比較は
  * 顧客単位ではなくアカウント全体で見る必要がある。無効なスケジュールと、
- * 実行されない組み合わせ（Google × pc。実験モードのときは数える）は数えない。
+ * 実行されない組み合わせ（Google × mobile）は数えない。
  */
 export async function getDailyRunsByPlatform(): Promise<DailyRunsByPlatform> {
   const clients = await listClients();

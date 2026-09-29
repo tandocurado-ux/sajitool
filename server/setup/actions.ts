@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getUserFrom } from "@/server/auth/queries";
 import { isClientOwned } from "@/server/clients/queries";
+import { devicePolicyOptions } from "@/server/device-policy";
 import { enqueueImmediateRun, findFirstScheduleId } from "@/server/immediate/queue";
 import type { Platform } from "@/lib/types";
 import { applyBulkSetup } from "./apply";
@@ -22,7 +23,8 @@ export async function bulkCreateSchedules(
   _prevState: BulkSetupState,
   formData: FormData,
 ): Promise<BulkSetupState> {
-  const parsed = parseBulkSetupInput(formData);
+  const policy = devicePolicyOptions();
+  const parsed = parseBulkSetupInput(formData, policy);
   if (!parsed.ok) {
     return { ...initialBulkSetupState, error: parsed.error };
   }
@@ -41,7 +43,7 @@ export async function bulkCreateSchedules(
     };
   }
 
-  const result = await applyBulkSetup(supabase, input);
+  const result = await applyBulkSetup(supabase, input, policy);
   if (!result.ok) {
     return {
       ...initialBulkSetupState,

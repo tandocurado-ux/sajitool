@@ -12,7 +12,7 @@ import { AddRegionForm } from "@/components/add-region-form";
 import { AddScheduleForm } from "@/components/add-schedule-form";
 import { RespreadTool } from "@/components/respread-tool";
 import { getDailyRunsByPlatform } from "@/server/schedules/capacity";
-import { googlePcExperimentEnabled } from "@/server/device-policy";
+import { googleMobileAllowed } from "@/server/device-policy";
 import { allowedDevicesFor, isAllowedCombination } from "@/lib/device-policy";
 import { ImmediateRunButton, ImmediateRunStatus } from "@/components/immediate-run";
 import { ScheduleToggle } from "@/components/schedule-toggle";
@@ -157,8 +157,8 @@ export default async function ClientDetailPage(
 
   // キーワードごとの計測状況。「計測中」は実際に実行されるスケジュール
   // （有効 かつ 計測対象のデバイス）が1件以上あること。
-  // 無効なものや Google × pc しか無いキーワードは、登録があっても未計測として扱う。
-  const googlePc = googlePcExperimentEnabled();
+  // 無効なものや Google × mobile しか無いキーワードは、登録があっても未計測として扱う。
+  const googleMobile = googleMobileAllowed();
   const scheduleKeys = new Set(
     schedules.map(
       (schedule) => `${schedule.keyword_id}|${schedule.region_id}|${schedule.device}`,
@@ -168,7 +168,7 @@ export default async function ClientDetailPage(
   for (const schedule of schedules) {
     const keyword = keywordById.get(schedule.keyword_id);
     if (!keyword || !schedule.enabled) continue;
-    if (!isAllowedCombination(keyword.platform, schedule.device, { googlePc })) continue;
+    if (!isAllowedCombination(keyword.platform, schedule.device, { googleMobile })) continue;
     activeByKeyword.set(keyword.id, (activeByKeyword.get(keyword.id) ?? 0) + 1);
   }
   const keywordRows: KeywordRow[] = keywords.map((keyword) => {
@@ -176,7 +176,7 @@ export default async function ClientDetailPage(
     let toCreate = 0;
     let toSkip = 0;
     for (const region of regions) {
-      for (const device of allowedDevicesFor(keyword.platform, { googlePc })) {
+      for (const device of allowedDevicesFor(keyword.platform, { googleMobile })) {
         if (scheduleKeys.has(`${keyword.id}|${region.id}|${device}`)) toSkip += 1;
         else toCreate += 1;
       }
@@ -309,7 +309,7 @@ export default async function ClientDetailPage(
             <h2 className="mb-3 text-sm font-semibold tracking-tight text-fg">
               キーワードを追加
             </h2>
-            <AddKeywordForm clientId={id} regionCount={regions.length} googlePc={googlePc} />
+            <AddKeywordForm clientId={id} regionCount={regions.length} googleMobile={googleMobile} />
           </section>
 
           <section className={cardClass}>
@@ -331,7 +331,7 @@ export default async function ClientDetailPage(
                 clientId={id}
                 keywords={keywordRows}
                 regionCount={regions.length}
-                googlePc={googlePc}
+                googleMobile={googleMobile}
                 existingRunsByPlatform={
                   unmeasuredKeywords > 0 ? await getDailyRunsByPlatform() : {}
                 }
@@ -414,7 +414,11 @@ export default async function ClientDetailPage(
             <h2 className="mb-3 text-sm font-semibold tracking-tight text-fg">
               スケジュールを追加
             </h2>
-            <AddScheduleForm keywords={keywords} regions={regions} />
+            <AddScheduleForm
+              keywords={keywords}
+              regions={regions}
+              googleMobile={googleMobile}
+            />
           </section>
 
           <section className={cardClass}>

@@ -45,20 +45,22 @@ ERROR_LABELS = {
 RETRYABLE_ERRORS = ("search_box_not_found", dev.PROTOCOL_ERROR)
 
 # platform ごとに計測してよいデバイス（lib/device-policy.ts と同じ表）。
-# Google は mobile のみ。pc は BOT 検知（/sorry/）が続くため、登録が残っていても撃たない。
+# Google は pc のみ。UA と UA-CH を揃えた後、mobile はモバイル版の HTML が返り、
+# 結果セレクタ（#rso a h3 系）が合わず no_results になる。pc はデスクトップ版で結果を拾える。
+# mobile の登録が残っていても撃たない。
 ALLOWED_DEVICES: dict[str, tuple[str, ...]] = {
-    "google": ("mobile",),
+    "google": ("pc",),
     "yahoo": ("pc", "mobile"),
 }
 
 
-# 実験用: 1 にすると Google × pc のスキップを外して実行する（UA 修正後に pc が通るかの検証）。
-# 既定 0 = 従来どおりスキップ。画面・サーバーの登録ガードはこの値では変わらない。
-GOOGLE_PC_ENABLED_ENV = "SAJI_GOOGLE_PC_ENABLED"
+# 切り戻し用: 1 にすると Google × mobile のスキップを外して実行する。
+# 既定 0 = スキップ。画面側（Vercel）にも同じ名前の env がある。
+GOOGLE_ALLOW_MOBILE_ENV = "SAJI_GOOGLE_ALLOW_MOBILE"
 
 
-def google_pc_enabled() -> bool:
-    return os.environ.get(GOOGLE_PC_ENABLED_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
+def google_mobile_allowed() -> bool:
+    return os.environ.get(GOOGLE_ALLOW_MOBILE_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def skip_reason(target: ScheduleTarget) -> Optional[str]:
@@ -67,9 +69,9 @@ def skip_reason(target: ScheduleTarget) -> Optional[str]:
     if allowed is None or target.device in allowed:
         return None
     if target.platform == "google":
-        if google_pc_enabled():
-            return None  # 実験モード: pc も撃つ
-        return "Google の pc はスキップ（mobile のみ計測）"
+        if google_mobile_allowed():
+            return None  # 切り戻し: mobile も撃つ
+        return "Google の mobile はスキップ（pc のみ計測）"
     return f"{target.platform} の {target.device} は計測対象外"
 
 # Google だけ: 判定不能（最終 URL が SERP でない / SERP の DOM 未到達）も

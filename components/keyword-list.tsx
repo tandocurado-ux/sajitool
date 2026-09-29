@@ -27,8 +27,8 @@ type Props = {
   clientId: string;
   keywords: KeywordRow[];
   regionCount: number;
-  /** 実験モード（SAJI_GOOGLE_PC_ENABLED=1）。Google × pc も作る。 */
-  googlePc: boolean;
+  /** 切り戻し用（SAJI_GOOGLE_ALLOW_MOBILE=1）。Google × mobile も作る。 */
+  googleMobile: boolean;
   existingRunsByPlatform: Partial<Record<string, number>>;
 };
 
@@ -42,7 +42,7 @@ export function KeywordList({
   clientId,
   keywords,
   regionCount,
-  googlePc,
+  googleMobile,
   existingRunsByPlatform,
 }: Props) {
   // 入力欄の id が重ならないよう、開くパネルは1つだけにする。
@@ -124,7 +124,7 @@ export function KeywordList({
                 keyword={keyword.keyword}
                 platform={keyword.platform}
                 regionCount={regionCount}
-                devices={allowedDevicesFor(keyword.platform, { googlePc })}
+                devices={allowedDevicesFor(keyword.platform, { googleMobile })}
                 toCreate={keyword.toCreate}
                 toSkip={keyword.toSkip}
                 existingRunsByPlatform={existingRunsByPlatform}

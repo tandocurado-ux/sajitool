@@ -14,8 +14,8 @@ export type ApplyResult =
  * 呼び出し元ごとの違い。省略すれば、まとめて登録・新規登録の従来の動作になる。
  */
 export type ApplyOptions = {
-  /** 実験モード（SAJI_GOOGLE_PC_ENABLED=1）。true のときだけ Google × pc も作る。 */
-  googlePc?: boolean;
+  /** 切り戻し用（SAJI_GOOGLE_ALLOW_MOBILE=1）。true のときだけ Google × mobile も作る。 */
+  googleMobile?: boolean;
   /**
    * 自動分散の開始位置。登録済みの件数を渡すと、前回の続きの枠から割り振る。
    * 少数ずつ何度も登録しても、毎回同じ枠（先頭）に固まらない。
@@ -222,9 +222,9 @@ export async function applyBulkSetup(
     for (const platform of input.platforms) {
       const keywordId = keywordIdByKey.get(keywordKey(keyword, platform));
       if (!keywordId) continue;
-      // Google は mobile のみ（pc は実験モードのときだけ）。Yahoo! は選んだデバイス全部。
+      // Google は pc のみ（mobile は作らない）。Yahoo! は選んだデバイス全部。
       const devices = devicesForPlatform(platform, input.devices, {
-        googlePc: options.googlePc,
+        googleMobile: options.googleMobile,
       });
       for (const regionId of regionIds) {
         for (const device of devices) {

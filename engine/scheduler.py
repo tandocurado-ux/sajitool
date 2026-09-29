@@ -412,7 +412,7 @@ class Scheduler:
             dev.log_exception(caught, context="スケジュールの読み込み")
             return
 
-        # Google × pc など計測対象外の組み合わせは、DB に残っていても積まない
+        # Google × mobile など計測対象外の組み合わせは、DB に残っていても積まない
         # （初めて見たものだけログに出す）。Yahoo! は pc / mobile とも対象。
         kept: list[ScheduleTarget] = []
         newly_skipped: dict[str, list[ScheduleTarget]] = {}
@@ -964,11 +964,11 @@ class Scheduler:
             f"breaker 連続 {self.google_breaker_threshold} 件 blocked で発動"
         )
         print(
-            "  Google×pc  : "
+            "  Googleデバイス: pc で計測 / mobile は "
             + (
-                f"実行する（実験モード {runner.GOOGLE_PC_ENABLED_ENV}=1）"
-                if runner.google_pc_enabled()
-                else f"スキップ（mobile のみ計測。{runner.GOOGLE_PC_ENABLED_ENV}=1 で実験的に実行）"
+                f"実行する（切り戻し {runner.GOOGLE_ALLOW_MOBILE_ENV}=1）"
+                if runner.google_mobile_allowed()
+                else f"スキップ（{runner.GOOGLE_ALLOW_MOBILE_ENV}=1 で実行）"
             )
         )
         print(

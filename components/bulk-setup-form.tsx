@@ -14,7 +14,7 @@ import {
 } from "@/server/setup/schema";
 import { parseKeywordLines } from "@/lib/parse";
 import { computeSchedulePlan, type SpreadSuggestion } from "@/lib/schedule-plan";
-import { devicesForPlatform, includesGoogle } from "@/lib/device-policy";
+import { GOOGLE_DEVICE, blockedDeviceFor, devicesForPlatform } from "@/lib/device-policy";
 import type { Keyword, Region } from "@/lib/types";
 import { FormError } from "./form-error";
 import { ImmediateRunStatus } from "./immediate-run";
@@ -44,6 +44,8 @@ type Props = {
   previousSettings: PreviousSettings | null;
   /** アカウント全体で登録済みの1日の実行回数（platform 別）。消化能力の充足率に使う。 */
   existingRunsByPlatform?: Partial<Record<string, number>>;
+  /** 切り戻し用（SAJI_GOOGLE_ALLOW_MOBILE=1）。Google でもモバイルを選べる。 */
+  googleMobile?: boolean;
 };
 
 const SEP = "\u0000";
@@ -77,6 +79,7 @@ export function BulkSetupForm({
   scheduleCountByKeyword,
   previousSettings,
   existingRunsByPlatform = {},
+  googleMobile = false,
 }: Props) {
   const [state, formAction, pending] = useActionState(
     bulkCreateSchedules,
@@ -115,7 +118,7 @@ export function BulkSetupForm({
   const [deviceMode, setDeviceMode] = useState<DeviceMode>(() => {
     const initial = previousSettings?.deviceMode ?? "pc";
     const initialPlatforms = platformsFor(previousSettings?.platformMode ?? "google");
-    return includesGoogle(initialPlatforms) && initial === "pc" ? "mobile" : initial;
+    return initial === blockedDeviceFor(initialPlatforms, { googleMobile }) ? GOOGLE_DEVICE : initial;
   });
 
   function updateTiming(patch: Partial<TimingValue>) {
@@ -125,14 +128,21 @@ export function BulkSetupForm({
   function applyPreviousSettings() {
     if (!previousSettings) return;
     setPlatformMode(previousSettings.platformMode);
-    setDeviceMode(previousSettings.deviceMode);
+    setDeviceMode(
+      previousSettings.deviceMode ===
+        blockedDeviceFor(platformsFor(previousSettings.platformMode), { googleMobile })
+        ? GOOGLE_DEVICE
+        : previousSettings.deviceMode,
+    );
     setTiming(timingFrom(previousSettings));
   }
 
-  // Google を含む登録で pc 単独は選べない（選んだ状態で Google に切り替えたらモバイルへ）。
+  // Google を含む登録でモバイル単独は選べない（選んだ状態で Google に切り替えたら PC へ）。
   function changePlatformMode(next: PlatformMode) {
     setPlatformMode(next);
-    if (includesGoogle(platformsFor(next)) && deviceMode === "pc") setDeviceMode("mobile");
+    if (deviceMode === blockedDeviceFor(platformsFor(next), { googleMobile })) {
+      setDeviceMode(GOOGLE_DEVICE);
+    }
   }
 
   const keywordIdByKey = useMemo(() => {
@@ -166,8 +176,8 @@ export function BulkSetupForm({
     for (const keyword of keywords) {
       for (const platform of platforms) {
         const keywordId = keywordIdByKey.get(`${keyword}${SEP}${platform}`);
-        // Google は mobile のみ作られる（pc は数えない）。
-        const platformDevices = devicesForPlatform(platform, devices);
+        // Google は pc のみ作られる（mobile は数えない）。
+        const platformDevices = devicesForPlatform(platform, devices, { googleMobile });
         let created = 0;
         for (const regionId of selectedRegionIds) {
           for (const device of platformDevices) {
@@ -193,6 +203,7 @@ export function BulkSetupForm({
     filledNewRegions.length,
     keywordIdByKey,
     scheduleKeySet,
+    googleMobile,
   ]);
 
   // 1枠あたり何件になるか、その枠を消化しきれるかの目安。
@@ -474,7 +485,12 @@ export function BulkSetupForm({
         />
 
         <div className="mt-4">
-          <DeviceModeField value={deviceMode} onChange={setDeviceMode} platforms={platforms} />
+          <DeviceModeField
+            value={deviceMode}
+            onChange={setDeviceMode}
+            platforms={platforms}
+            googleMobile={googleMobile}
+          />
         </div>
       </section>
 
