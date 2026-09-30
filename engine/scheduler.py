@@ -972,9 +972,15 @@ class Scheduler:
             )
         )
         print(
-            f"  アセット遮断: 共通 {dev.describe_blocking(dev.blocked_assets_for(None))}"
+            f"  アセット遮断: Yahoo! {dev.describe_blocking(dev.blocked_assets_for('yahoo'))}"
             f" / Google {dev.describe_blocking(dev.blocked_assets_for('google'))}"
             f"（{dev.BLOCK_ASSETS_ENV} / {dev.BLOCK_ASSETS_GOOGLE_ENV}）"
+        )
+        print(
+            f"  プロキシ認証: Google {dev.proxy_auth_mode('google')}"
+            f" / Yahoo! {dev.proxy_auth_mode('yahoo')}"
+            f"（{dev.PROXY_AUTH_ENV} / {dev.PROXY_AUTH_YAHOO_ENV}。"
+            f"--proxy-server {'併用' if dev.proxy_server_arg_enabled() else 'なし'}）"
         )
         print(
             "  即時実行   : "

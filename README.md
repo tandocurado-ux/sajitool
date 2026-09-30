@@ -170,6 +170,36 @@ Yahoo! だけ / 両方）を選び、1枠あたり N 件以内になるよう時
 
 Yahoo! のフロー・username・リトライ（1回）は従来どおりで変えていない。
 
+#### プロキシ認証の方式（Chrome 拡張 / CDP）
+
+SOAX の認証（407 への応答）は、Google 経路では **Chrome 拡張** が行う。CDP の
+`Fetch.AuthRequired` で応答する方式は、全リクエストを CDP 経由で一時停止させる（`Fetch.enable`）
+ため、Chrome の外から通信に介入することになる。拡張なら認証が Chrome の中で完結する。
+
+| 環境変数 | 既定 | 内容 |
+| -------- | ---- | ---- |
+| `NODRIVER_PROXY_AUTH` | `extension` | Google 経路の方式。`cdp` で以前の方式に戻す |
+| `NODRIVER_PROXY_AUTH_YAHOO` | `cdp` | Yahoo! 経路の方式（従来どおり）。`extension` にもできる |
+| `NODRIVER_PROXY_SERVER_ARG` | `1` | `--proxy-server` も併用する。`0` でプロキシの指定も拡張だけに任せる |
+
+- 拡張は起動のたびに一時ディレクトリへ作り（username が実行ごとに変わるため）、
+  `--load-extension` / `--disable-extensions-except` で読み込む。Chrome を止めたら消す
+  （パスワードを含むため）。**Manifest V3**（`proxy` + `webRequest` + `webRequestAuthProvider`、
+  `onAuthRequired` の `asyncBlocking`）。Manifest V2 は Chrome 139 以降で読み込めないため使わない
+- 拡張は `chrome.proxy.settings` でプロキシも指定するが、既定では `--proxy-server` も付ける。
+  拡張が読み込まれなかったときに直結（Render の IP）で検索してしまうのを防ぐため
+  （拡張が無ければ 407 で失敗する）
+- 起動後、拡張の service worker が立ち上がったことを確認して段階ログ「プロキシ認証拡張」に
+  拡張 id を出す。見つからなければ、その実行だけ CDP 方式に切り替える
+  （`NODRIVER_PROXY_SERVER_ARG=0` のときは直結になるので中止する）
+- Google 経路は、拡張で認証し、ブロックする種別も無ければ、CDP の `Fetch` を有効にしない
+  （段階ログ「プロキシ設定」に `CDP Fetch: 無効` と出る）。転送量の計測は `Network` の
+  イベントを聞くだけなので通信には介入しない
+- ブランド版の Google Chrome（137 以降）は `--load-extension` を受け付けないことがある。
+  本番は Chrome for Testing なので読み込める。読み込めない環境では自動で CDP 方式になる
+- exit IP の取得は、Google 経路では応答の描画を最大 10 秒待ってから読む。JSON でないものが
+  表示されていたら（Chrome のエラーページ・`HTTP ERROR 407` など）、その内容をログに残す
+
 #### 結果ページの DOM 診断（no_results のとき）
 
 検索結果 URL（`/search?q=`）には到達したのに結果セレクタが 0 件だと `no_results` になる。
@@ -190,11 +220,12 @@ runs の注記には、ヒットした探りセレクタだけを1行で残す�
 
 ### 帯域（SOAX の転送量）
 
-- **アセット遮断**: image / font / media は Fetch ドメインで abort する（従来から常時有効）。
-  `SAJI_BLOCK_ASSETS`（既定 `1` = 従来どおり全3種。`0` で無効、`image,font` のように種類を絞れる）、
-  Google だけ変えるなら `SAJI_BLOCK_ASSETS_GOOGLE`（未設定なら共通設定に従う。例: Google で
-  検知が悪化したら `font,media` にして image だけ外す）。document / script / stylesheet /
-  xhr / fetch は検索結果 DOM の構築に必要なので遮断しない
+- **アセット遮断**: image / font / media を Fetch ドメインで abort する。
+  - Yahoo!: `SAJI_BLOCK_ASSETS`（既定 `1` = 全3種をブロック。`0` で無効、`image,font` のように絞れる）
+  - Google: `SAJI_BLOCK_ASSETS_GOOGLE`（既定 `0` = **ブロックしない**。共通設定には従わない）。
+    「Windows デスクトップと名乗りながら画像を1バイトも読まない」のは実ブラウザと違う挙動で、
+    BOT 検知の材料になるため、帯域より検知回避を優先して全部読む。`1` で以前の動作に戻せる
+  - document / script / stylesheet / xhr / fetch は検索結果 DOM の構築に必要なので遮断しない
 - **転送量の実測**: 1 run ごとに CDP の `Network.loadingFinished`（回線上の受信バイト）を積算し、
   結果の「転送量: X.XX MB（ブロック: on/off） / ページロード回数: N（リロード M / 再ナビ K /
   検索窓リトライ R）」に出す。セッション変更リトライは全試行の合計。1時間ごとの集計に

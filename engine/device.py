@@ -16,9 +16,12 @@ import os
 import platform as _platform
 import random
 import re
+import secrets
+import shutil
 import string
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from collections import Counter
@@ -45,9 +48,14 @@ ASSET_TYPE_NAMES: dict[str, "cdp.network.ResourceType"] = {
 DEFAULT_BLOCKED_ASSETS = ("image", "font", "media")
 # 従来からこの3種は常時ブロックしていたので、既定は 1（有効）= 従来と同じ動作。
 # SAJI_BLOCK_ASSETS=0 で無効、"image,font" のように種類を絞ることもできる。
-# Google だけ変えたいときは SAJI_BLOCK_ASSETS_GOOGLE（未設定なら SAJI_BLOCK_ASSETS に従う）。
+#
+# Google 経路は SAJI_BLOCK_ASSETS_GOOGLE で決まり、既定は 0（ブロックしない）。
+# 「Windows デスクトップと名乗りながら画像を1バイトも読まない」のは実ブラウザと違う
+# 挙動で、BOT 検知の材料になる。帯域より検知回避を優先し、実ブラウザのように全部読む。
+# Yahoo! は SAJI_BLOCK_ASSETS に従う（既定 1 = ブロックする。従来どおり）。
 BLOCK_ASSETS_ENV = "SAJI_BLOCK_ASSETS"
 BLOCK_ASSETS_GOOGLE_ENV = "SAJI_BLOCK_ASSETS_GOOGLE"
+BLOCK_ASSETS_GOOGLE_DEFAULT = "0"
 
 
 def parse_blocked_assets(raw: str) -> tuple[str, ...]:
@@ -66,12 +74,11 @@ def parse_blocked_assets(raw: str) -> tuple[str, ...]:
 
 def blocked_assets_for(platform: Optional[str]) -> tuple[str, ...]:
     """この platform でブロックするアセット種別（env の解釈）。"""
-    raw = os.environ.get(BLOCK_ASSETS_ENV, "1")
     if platform == "google":
+        # Google は共通設定に従わない（未設定なら既定 0 = ブロックしない）。
         google_raw = os.environ.get(BLOCK_ASSETS_GOOGLE_ENV, "").strip()
-        if google_raw:
-            raw = google_raw
-    return parse_blocked_assets(raw)
+        return parse_blocked_assets(google_raw or BLOCK_ASSETS_GOOGLE_DEFAULT)
+    return parse_blocked_assets(os.environ.get(BLOCK_ASSETS_ENV, "1"))
 
 
 def describe_blocking(names: tuple[str, ...]) -> str:
@@ -271,6 +278,12 @@ ENV_KEYS_OF_INTEREST: tuple[str, ...] = (
     "YAHOO_INTERVAL_MIN_SECONDS",
     "YAHOO_INTERVAL_MAX_SECONDS",
     "QUEUE_MAX_ITEMS",
+    "NODRIVER_PROXY_AUTH",
+    "NODRIVER_PROXY_AUTH_YAHOO",
+    "NODRIVER_PROXY_SERVER_ARG",
+    "SAJI_BLOCK_ASSETS",
+    "SAJI_BLOCK_ASSETS_GOOGLE",
+    "SAJI_GOOGLE_ALLOW_MOBILE",
 )
 
 
@@ -817,6 +830,153 @@ def find_chrome() -> str:
     )
 
 
+# --------------------------------------------------------------------------
+# プロキシ認証（Chrome 拡張 / CDP）
+# --------------------------------------------------------------------------
+#
+# CDP の Fetch.AuthRequired で認証に応答する方式は、全リクエストを CDP 経由で
+# 一時停止させる（Fetch.enable）ため、イベントループが詰まるとプロキシ応答が壊れる
+# （exit IP 取得の JSONDecodeError が症状）。Chrome 拡張なら認証が Chrome の中で
+# 完結し、CDP 層はリクエストに介入しない。
+#
+#   NODRIVER_PROXY_AUTH        Google 経路の方式。extension（既定）/ cdp
+#   NODRIVER_PROXY_AUTH_YAHOO  Yahoo! 経路の方式。cdp（既定 = 従来どおり）/ extension
+#   NODRIVER_PROXY_SERVER_ARG  1（既定）: --proxy-server も付ける。拡張が読み込まれなくても
+#                              直結にはならず 407 で失敗する（誤った IP で計測しない）。
+#                              0: プロキシの指定も拡張だけに任せる
+#
+# 拡張は Manifest V3。Chrome 139 以降は Manifest V2 を読み込めないため、
+# proxy + webRequest + webRequestAuthProvider（onAuthRequired の asyncBlocking）で作る。
+PROXY_AUTH_ENV = "NODRIVER_PROXY_AUTH"
+PROXY_AUTH_YAHOO_ENV = "NODRIVER_PROXY_AUTH_YAHOO"
+PROXY_SERVER_ARG_ENV = "NODRIVER_PROXY_SERVER_ARG"
+PROXY_AUTH_EXTENSION = "extension"
+PROXY_AUTH_CDP = "cdp"
+PROXY_AUTH_MODES = (PROXY_AUTH_EXTENSION, PROXY_AUTH_CDP)
+PROXY_EXTENSION_NAME = "Saji Proxy Auth"
+# 拡張の service worker が立ち上がるのを待つ上限。
+PROXY_EXTENSION_WAIT_SECONDS = 8.0
+# ブランド版 Chrome（137 以降）は --load-extension を既定で無効にしているので解除する。
+# Chrome for Testing では不要だが、付けても害はない。
+PROXY_EXTENSION_DISABLED_FEATURES = ("DisableLoadExtensionCommandLineSwitch",)
+
+
+def proxy_auth_mode(platform: Optional[str]) -> str:
+    """この経路で使うプロキシ認証の方式（extension / cdp）。"""
+    if platform == "google":
+        name, default = PROXY_AUTH_ENV, PROXY_AUTH_EXTENSION
+    else:
+        name, default = PROXY_AUTH_YAHOO_ENV, PROXY_AUTH_CDP
+    value = os.environ.get(name, "").strip().lower() or default
+    if value not in PROXY_AUTH_MODES:
+        print(f"  ! {name}={value!r} は未対応です（{default} を使います）")
+        return default
+    return value
+
+
+def proxy_server_arg_enabled() -> bool:
+    return _env_flag(PROXY_SERVER_ARG_ENV, "1")
+
+
+def split_proxy_server(server: str) -> tuple[str, int]:
+    """"host:port"（scheme 付きでも可）を (host, port) にする。"""
+    value = server.strip()
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    host, _, port = value.rpartition(":")
+    if not host or not port.isdigit():
+        raise SearchError(f"プロキシの指定を読み取れません（host:port の形式ではありません）: {server!r}")
+    return host, int(port)
+
+
+def create_proxy_auth_extension(proxy: ProxyConfig) -> Path:
+    """プロキシの指定と認証を Chrome の中で行う拡張を一時ディレクトリに作る。
+
+    username は実行ごとに変わる（session を含む）ので、起動のたびに作り直す。
+    パスワードを含むため、Chrome を止めたら close_browser が消す。
+    """
+    host, port = split_proxy_server(proxy.server)
+    directory = Path(tempfile.mkdtemp(prefix="saji_proxy_auth_"))
+    # service worker のファイル名は起動ごとに一意にする。読み込み確認でこの名前だけを
+    # 探すので、Chrome 内蔵の拡張など別の service worker を取り違えない。
+    worker_name = f"worker_{secrets.token_hex(8)}.js"
+    manifest = {
+        "manifest_version": 3,
+        "name": PROXY_EXTENSION_NAME,
+        "version": "1.0.0",
+        "minimum_chrome_version": "108",
+        "permissions": ["proxy", "webRequest", "webRequestAuthProvider"],
+        "host_permissions": ["<all_urls>"],
+        "background": {"service_worker": worker_name},
+    }
+    settings = {
+        "mode": "fixed_servers",
+        "rules": {
+            "singleProxy": {"scheme": "http", "host": host, "port": port},
+            "bypassList": ["localhost", "127.0.0.1"],
+        },
+    }
+    worker = (
+        "const SETTINGS = " + json.dumps(settings) + ";\n"
+        "const CREDENTIALS = " + json.dumps({"username": proxy.username, "password": proxy.password}) + ";\n"
+        "chrome.proxy.settings.set({ value: SETTINGS, scope: 'regular' }, () => {});\n"
+        "// 同じリクエストで認証を繰り返し求められたら（資格情報が違う）、打ち切って失敗させる。\n"
+        "const attempts = new Map();\n"
+        "chrome.webRequest.onAuthRequired.addListener(\n"
+        "  (details, callback) => {\n"
+        "    if (!details.isProxy) { callback({}); return; }\n"
+        "    const count = (attempts.get(details.requestId) || 0) + 1;\n"
+        "    attempts.set(details.requestId, count);\n"
+        "    if (attempts.size > 500) attempts.clear();\n"
+        "    if (count > 2) { callback({ cancel: true }); return; }\n"
+        "    callback({ authCredentials: CREDENTIALS });\n"
+        "  },\n"
+        "  { urls: ['<all_urls>'] },\n"
+        "  ['asyncBlocking']\n"
+        ");\n"
+    )
+    (directory / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    (directory / worker_name).write_text(worker, encoding="utf-8")
+    return directory
+
+
+def proxy_extension_worker_name(directory: Path) -> str:
+    """作った拡張の service worker のファイル名（manifest から読む）。"""
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    return str(manifest["background"]["service_worker"])
+
+
+def remove_proxy_auth_extension(directory: Optional[Path]) -> None:
+    if directory is None:
+        return
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+async def wait_for_proxy_extension(
+    browser, directory: Path, max_seconds: Optional[float] = None
+) -> Optional[str]:
+    """拡張の service worker が立ち上がるのを待ち、拡張 id を返す。見つからなければ None。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + (PROXY_EXTENSION_WAIT_SECONDS if max_seconds is None else max_seconds)
+    suffix = "/" + proxy_extension_worker_name(directory)
+    while True:
+        try:
+            targets = await browser.connection.send(cdp.target.get_targets())
+        except Exception:  # noqa: BLE001 - 見つからない扱いにして呼び出し側で判断する
+            targets = []
+        for info in targets or []:
+            url = str(getattr(info, "url", "") or "")
+            if (
+                str(getattr(info, "type_", "")) == "service_worker"
+                and url.startswith("chrome-extension://")
+                and url.endswith(suffix)
+            ):
+                return url[len("chrome-extension://"):].split("/", 1)[0]
+        if loop.time() >= deadline:
+            return None
+        await asyncio.sleep(0.2)
+
+
 # Google 経路だけに足す起動引数（fingerprint 対策）。Yahoo! には付けない。
 GOOGLE_EXTRA_BROWSER_ARGS = ("--disable-blink-features=AutomationControlled",)
 # --disable-features は Chrome が「最後に指定した1つ」しか見ないので、
@@ -840,6 +1000,15 @@ async def start_browser(
     if platform == "google":
         disabled_features += list(GOOGLE_EXTRA_DISABLED_FEATURES)
 
+    # プロキシ認証の方式。拡張方式のときだけ拡張を作って読み込ませる
+    # （Yahoo! は既定が cdp なので、引数は従来と同じ）。
+    auth_mode = proxy_auth_mode(platform) if proxy else None
+    extension_dir: Optional[Path] = None
+    if proxy and auth_mode == PROXY_AUTH_EXTENSION:
+        extension_dir = create_proxy_auth_extension(proxy)
+        disabled_features += list(PROXY_EXTENSION_DISABLED_FEATURES)
+    use_proxy_arg = bool(proxy) and (extension_dir is None or proxy_server_arg_enabled())
+
     browser_args = [
         "--lang=ja",
         f"--accept-lang={ACCEPT_LANGUAGE}",
@@ -855,8 +1024,11 @@ async def start_browser(
     browser_args.extend(
         arg for arg in os.environ.get("CHROME_EXTRA_ARGS", "").split() if arg
     )
-    if proxy:
+    if use_proxy_arg:
         browser_args.append(f"--proxy-server={proxy.server}")
+    if extension_dir is not None:
+        browser_args.append(f"--load-extension={extension_dir}")
+        browser_args.append(f"--disable-extensions-except={extension_dir}")
 
     reset_stage()
     chrome_path = find_chrome()
@@ -865,13 +1037,44 @@ async def start_browser(
         f"path={chrome_path} headless={headless} "
         f"proxy={'あり' if proxy else 'なし'} args={' '.join(browser_args)}",
     )
-    browser = await uc.start(
-        browser_executable_path=chrome_path,
-        browser_args=browser_args,
-        lang="ja-JP",
-        headless=headless,
-    )
+    try:
+        browser = await uc.start(
+            browser_executable_path=chrome_path,
+            browser_args=browser_args,
+            lang="ja-JP",
+            headless=headless,
+        )
+    except BaseException:
+        remove_proxy_auth_extension(extension_dir)
+        raise
     stage("Chrome起動完了", f"websocket={getattr(browser, 'websocket_url', '') or '-'}")
+
+    if proxy:
+        setattr(browser, "_saji_proxy_auth", auth_mode)
+    if extension_dir is not None:
+        setattr(browser, "_saji_proxy_ext_dir", extension_dir)
+        extension_id = await wait_for_proxy_extension(browser, extension_dir)
+        if extension_id:
+            stage(
+                "プロキシ認証拡張",
+                f"読み込み確認 id={extension_id}（Manifest V3・service worker 起動済み） "
+                f"--proxy-server={'あり' if use_proxy_arg else 'なし（拡張で指定）'}",
+            )
+        elif use_proxy_arg:
+            # 拡張が無くても --proxy-server は効いているので、この実行は CDP で認証する。
+            setattr(browser, "_saji_proxy_auth", PROXY_AUTH_CDP)
+            stage(
+                "プロキシ認証拡張",
+                f"! {PROXY_EXTENSION_WAIT_SECONDS:.0f} 秒待っても拡張の service worker が見つかりません。"
+                "この実行は CDP（Fetch.AuthRequired）で認証します",
+            )
+        else:
+            # プロキシの指定ごと拡張に任せているので、拡張が無いと直結になる。撃たない。
+            await close_browser(browser, context="拡張なし")
+            raise SearchError(
+                "プロキシ認証拡張が読み込まれていません（直結になるため中止）。"
+                f"{PROXY_SERVER_ARG_ENV}=1 か {PROXY_AUTH_ENV}=cdp にしてください。"
+            )
     return browser
 
 
@@ -879,7 +1082,10 @@ async def setup_request_interception(
     tab, proxy: Optional[ProxyConfig], platform: Optional[str] = None
 ) -> None:
     """image / font / media を env に従って abort し、必要ならプロキシ認証に応答する。
-    あわせて転送量とページロード回数の計測を仕込む。"""
+    あわせて転送量とページロード回数の計測を仕込む。
+
+    プロキシ認証が Chrome 拡張方式で、ブロックする種別も無い Google 経路では、
+    CDP の Fetch を有効にしない（計測用の Network イベントを聞くだけ）。"""
     blocked_names = blocked_assets_for(platform)
     blocked_types = frozenset(ASSET_TYPE_NAMES[name] for name in blocked_names)
     meter = TransferMeter(blocked_names)
@@ -887,15 +1093,26 @@ async def setup_request_interception(
     if browser is not None:
         setattr(browser, "_saji_meter", meter)
 
+    # 認証の方式は start_browser が決めている（拡張が読み込めなかったら cdp に落ちている）。
+    auth_mode = getattr(browser, "_saji_proxy_auth", PROXY_AUTH_CDP) if proxy else None
+    use_cdp_auth = bool(proxy) and auth_mode != PROXY_AUTH_EXTENSION
+    # Google 経路は、ブロックも CDP 認証も要らないなら Fetch を有効にしない
+    # （リクエストを CDP で止めない = Chrome に任せる）。Yahoo! は従来どおり常に有効。
+    use_fetch = bool(blocked_types) or use_cdp_auth or platform != "google"
+    auth_label = (
+        "あり（Chrome 拡張で応答）" if auth_mode == PROXY_AUTH_EXTENSION else "あり（Fetch.AuthRequired で応答）"
+    )
+
     stage(
         "プロキシ設定",
         (
-            f"server={proxy.server} 認証=あり（Fetch.AuthRequired で応答） "
+            f"server={proxy.server} 認証={auth_label} "
             f"session_mode={proxy.session_mode} {describe_proxy(proxy)}"
             if proxy
             else "プロキシなし（直結）"
         )
-        + f" / アセットブロック: {describe_blocking(blocked_names)}",
+        + f" / アセットブロック: {describe_blocking(blocked_names)}"
+        + f" / CDP Fetch: {'有効' if use_fetch else '無効（リクエストに介入しない）'}",
     )
 
     async def on_request_paused(event: cdp.fetch.RequestPaused, connection) -> None:
@@ -950,18 +1167,20 @@ async def setup_request_interception(
         except Exception:
             pass
 
-    tab.add_handler(cdp.fetch.RequestPaused, on_request_paused)
-    if proxy:
-        tab.add_handler(cdp.fetch.AuthRequired, on_auth_required)
+    if not use_fetch:
+        return
 
     # nodriver はハンドラ登録時に Fetch.enable() を引数なしで自動送信するため、
     # handle_auth_requests が落ちてしまう。先に enabled 扱いにしてから自前で送る。
     if cdp.fetch not in tab.enabled_domains:
         tab.enabled_domains.append(cdp.fetch)
+    tab.add_handler(cdp.fetch.RequestPaused, on_request_paused)
+    if use_cdp_auth:
+        tab.add_handler(cdp.fetch.AuthRequired, on_auth_required)
     await tab.send(
         cdp.fetch.enable(
             patterns=[cdp.fetch.RequestPattern(url_pattern="*")],
-            handle_auth_requests=bool(proxy),
+            handle_auth_requests=use_cdp_auth,
         )
     )
 
@@ -1721,6 +1940,14 @@ BROWSER_KILL_TIMEOUT_SECONDS = 5.0
 
 
 async def close_browser(browser, *, context: str = "") -> None:
+    """Chrome を止め、プロキシ認証拡張の一時ディレクトリ（パスワード入り）を消す。"""
+    try:
+        await _stop_browser_process(browser, context=context)
+    finally:
+        remove_proxy_auth_extension(getattr(browser, "_saji_proxy_ext_dir", None))
+
+
+async def _stop_browser_process(browser, *, context: str = "") -> None:
     """Chrome を確実に終わらせ、プロセスが消えたことを確認してから戻る。
 
     nodriver の browser.stop() は terminate を送るだけで終了を待たない。
@@ -1932,14 +2159,48 @@ async def current_url(tab) -> str:
         return ""
 
 
-async def read_exit_ip(tab) -> Optional[str]:
-    """exit IP を取得する。失敗しても検索自体は続行する。"""
+# exit IP の応答が描画されるのを待つ上限（Google 経路）。
+EXIT_IP_WAIT_SECONDS = 10.0
+
+
+async def read_exit_ip(tab, *, wait_seconds: float = 0.0) -> Optional[str]:
+    """exit IP を取得する。失敗しても検索自体は続行する。
+
+    tab.get() は応答の描画を待たずに戻ることがあり、その瞬間の body は空なので
+    JSONDecodeError になる（プロキシ経由で遅いときに起きやすい）。wait_seconds を
+    渡すと、JSON が読めるまでその秒数だけ待ち直す。0（既定）は従来どおり1回だけ読む。
+    """
     stage("exit IP取得", EXIT_IP_ENDPOINT)
     try:
         await tab.get(EXIT_IP_ENDPOINT)
-        body = await tab.evaluate("document.body.innerText", return_by_value=True)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, wait_seconds)
+        while True:
+            body = await tab.evaluate(
+                "document.body ? document.body.innerText : ''", return_by_value=True
+            )
+            text = body.strip() if isinstance(body, str) else ""
+            if text or loop.time() >= deadline:
+                break
+            await asyncio.sleep(0.3)
+        if wait_seconds > 0 and not text:
+            print(
+                f"    ! exit IP を取得できません（続行）: {wait_seconds:.0f} 秒待っても応答が空です"
+                "（プロキシが応答していない可能性）"
+            )
+            return None
         if isinstance(body, str):
-            return str(json.loads(body).get("ip"))
+            try:
+                return str(json.loads(text if wait_seconds > 0 else body).get("ip"))
+            except json.JSONDecodeError as caught:
+                # JSON でないものが表示されている（Chrome のエラーページ・407 など）。
+                # 何が出ていたのかを残す。プロキシの不調はここで最初に見えることが多い。
+                shown = " / ".join(line.strip() for line in text.splitlines() if line.strip())
+                print(
+                    f"    ! exit IP を取得できません（続行）: {type(caught).__name__}: {caught}"
+                    f" / 表示内容: {shown[:160] or '（空）'} / URL: {(await current_url(tab))[:80] or '-'}"
+                )
+                return None
     except Exception as caught:  # noqa: BLE001
         # プロキシ認証やネットワークの不調はここで最初に見えることが多い。
         print(f"    ! exit IP を取得できません（続行）: {type(caught).__name__}: {caught}")

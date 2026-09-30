@@ -85,7 +85,10 @@ async def search(
         await dev.inject_google_cookies(tab)
 
         if proxy is not None:
-            outcome.exit_ip = await dev.read_exit_ip(tab)
+            # 応答の描画を待ってから読む（遅いプロキシで body が空のまま読むのを防ぐ）。
+            outcome.exit_ip = await dev.read_exit_ip(
+                tab, wait_seconds=dev.EXIT_IP_WAIT_SECONDS
+            )
             if outcome.exit_ip is None:
                 outcome.note("exit IP を取得できませんでした。")
 
