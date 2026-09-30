@@ -47,6 +47,19 @@ RESULT_SELECTORS: dict[str, tuple[str, ...]] = {
 }
 
 
+async def _log_serp_diagnostics(tab, device: str, outcome: dev.SearchOutcome) -> None:
+    """no_results のとき、結果ページの構造を段階ログに出す（Google 経路だけ）。"""
+    info = await dev.serp_diagnostics(tab, RESULT_SELECTORS[device])
+    dev.stage(
+        "結果DOM診断",
+        f"device={device} 候補={', '.join(RESULT_SELECTORS[device])} が 0 件。"
+        "以下は実際のページ構造（{HTML 抜粋は " + dev.SERP_DIAG_HTML_CHARS_ENV + " で長さ変更}）",
+    )
+    for line in dev.format_serp_diagnostics(info):
+        print(f"      {line}", flush=True)
+    outcome.note(f"結果DOM診断: {dev.summarize_serp_hits(info)}")
+
+
 async def search(
     *,
     keyword: str,
@@ -141,6 +154,9 @@ async def search(
             outcome.status = "error"
             outcome.error = "no_results"
             outcome.note("判定不能（SERP の DOM に到達せず）のため BOT 扱いでリトライ対象")
+            # 結果ページには着いたのに拾えない。実際の DOM 構造をログに残す
+            # （mobile 版のセレクタ特定用。判定やフローには影響しない）。
+            await _log_serp_diagnostics(tab, device, outcome)
         else:
             outcome.status = "ok"
         dev.stage(

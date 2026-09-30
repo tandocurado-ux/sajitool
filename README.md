@@ -170,6 +170,24 @@ Yahoo! だけ / 両方）を選び、1枠あたり N 件以内になるよう時
 
 Yahoo! のフロー・username・リトライ（1回）は従来どおりで変えていない。
 
+#### 結果ページの DOM 診断（no_results のとき）
+
+検索結果 URL（`/search?q=`）には到達したのに結果セレクタが 0 件だと `no_results` になる。
+このとき Google 経路だけ、実際のページ構造を段階ログ「結果DOM診断」に出す
+（判定やフローには影響しない。Yahoo! は出さない）。
+
+- 探りセレクタ（`#rso` / `h3` / `[role=heading]` / `a[ping]` / `div[data-snhf]` など）ごとのヒット数
+- `#rso` の直下要素ごとの「リンク数・先頭のリンク先 host・見出し要素」
+- 見出し要素の祖先チェーン、Google 以外へ向くリンクの先頭 10 件、body から 3 階層の構造
+- 本文の先頭 1,200 文字と、`#rso` の HTML 抜粋（script / style を除いて先頭 3,000 文字。
+  `GOOGLE_SERP_DIAG_HTML_CHARS` で長さを変える。`0` で抜粋なし）
+
+runs の注記には、ヒットした探りセレクタだけを1行で残す。mobile 版 Google は `a h3` を
+使わないレイアウトのため、この診断で結果リンクのセレクタを特定してから
+`search_google.py` の `RESULT_SELECTORS["mobile"]` を直す（結果を拾うセレクタの追加だけで、
+検索フローは変えない）。
+
+
 ### 帯域（SOAX の転送量）
 
 - **アセット遮断**: image / font / media は Fetch ドメインで abort する（従来から常時有効）。

@@ -1238,6 +1238,224 @@ def format_diagnostics(info: dict[str, Any]) -> list[str]:
     ]
 
 
+# --------------------------------------------------------------------------
+# 結果ページの DOM 診断（no_results のとき）
+# --------------------------------------------------------------------------
+#
+# 検索結果 URL には到達したのに結果セレクタが 0 件のとき、ページが実際に
+# どんな構造なのかをログだけで把握するためのもの。mobile 版 Google は
+# #rso / a h3 を使わないレイアウトの可能性があるので、見出し・リンク・
+# コンテナの候補を広めに数え、見出しの祖先チェーンと HTML の先頭を出す。
+# Google 経路だけが呼ぶ。Yahoo! の経路は変えない。
+
+# 探りセレクタ。件数を数えるだけで、判定には使わない。
+SERP_PROBE_SELECTORS: tuple[str, ...] = (
+    "#rso",
+    "#search",
+    "#main",
+    "#center_col",
+    "#rcnt",
+    "#topstuff",
+    "#botstuff",
+    "div.g",
+    "div[data-hveid]",
+    "div[data-ved]",
+    "div[jscontroller]",
+    "h3",
+    "a h3",
+    "div[role=heading]",
+    "[role=heading]",
+    "[aria-level='3']",
+    "a[href^='/url']",
+    "a[href^='http']",
+    "a[ping]",
+    "a[data-ved]",
+    "cite",
+    "div[data-snhf]",
+    "div[data-snc]",
+    "div[data-attrid]",
+    "g-card",
+    "g-link",
+    # mobile 版の結果リンクの候補（ヒット数を比べてセレクタを決めるため）
+    "#rso a[href] [role=heading]",
+    "#rso a[href^='http'] [role=heading]",
+    "#rso a[ping] [role=heading]",
+    "#rso [role=heading][aria-level='3']",
+    "#rso div[data-snhf] a[href^='http']",
+    "#rso div[data-snc] a[href^='http']",
+    "#rso div[data-hveid] > div > div > a[href^='http']",
+)
+
+# HTML 抜粋の長さ。0 で抜粋を出さない（件数と構造だけ）。
+SERP_DIAG_HTML_CHARS_ENV = "GOOGLE_SERP_DIAG_HTML_CHARS"
+SERP_DIAG_HTML_CHARS_DEFAULT = 3000
+
+
+def serp_diag_html_chars() -> int:
+    raw = os.environ.get(SERP_DIAG_HTML_CHARS_ENV, "").strip()
+    if not raw:
+        return SERP_DIAG_HTML_CHARS_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return SERP_DIAG_HTML_CHARS_DEFAULT
+
+
+async def serp_diagnostics(tab, result_selectors: Sequence[str]) -> dict[str, Any]:
+    """結果ページの構造（探りセレクタの件数・要素の階層・見出しの祖先・HTML 先頭）を集める。
+
+    失敗しても空 dict を返し、検索の判定には影響させない。
+    """
+    probes = list(dict.fromkeys([*result_selectors, *SERP_PROBE_SELECTORS]))
+    script = (
+        """
+        ((probes, htmlChars) => {
+          const describe = (el) => {
+            if (!el || !el.tagName) return '?';
+            let s = el.tagName.toLowerCase();
+            if (el.id) s += '#' + el.id;
+            const cls = (typeof el.className === 'string' ? el.className : '').trim().split(/\s+/).filter(Boolean).slice(0, 2);
+            if (cls.length) s += '.' + cls.join('.');
+            const role = el.getAttribute && el.getAttribute('role');
+            if (role) s += '[role=' + role + ']';
+            return s;
+          };
+          const count = (sel) => { try { return document.querySelectorAll(sel).length; } catch (e) { return -1; } };
+          const counts = {};
+          for (const sel of probes) counts[sel] = count(sel);
+
+          // body から 3 階層ぶんの構造。子が多いものだけ辿る（テキストノードは無視）。
+          const outline = [];
+          const walk = (el, depth) => {
+            if (!el || outline.length >= 80) return;
+            const kids = Array.from(el.children || []);
+            outline.push('  '.repeat(depth) + describe(el) + ' (' + kids.length + ' 子)');
+            if (depth >= 3) return;
+            for (const kid of kids.slice(0, 12)) {
+              if (kid.tagName === 'SCRIPT' || kid.tagName === 'STYLE') continue;
+              walk(kid, depth + 1);
+            }
+          };
+          walk(document.body, 0);
+
+          // 見出しらしい要素の祖先チェーン（どのコンテナに結果が入っているか）。
+          const headings = [];
+          const seen = new Set();
+          for (const el of document.querySelectorAll('h3, [role=heading], [aria-level="3"], div[role=link]')) {
+            if (headings.length >= 8 || seen.has(el)) continue;
+            seen.add(el);
+            const chain = [];
+            let cur = el;
+            for (let i = 0; i < 7 && cur && cur !== document.body; i++) { chain.push(describe(cur)); cur = cur.parentElement; }
+            const link = el.closest('a') || el.querySelector('a');
+            let host = '';
+            try { host = link && link.href ? new URL(link.href).host : ''; } catch (e) { host = ''; }
+            headings.push({ text: (el.innerText || el.textContent || '').trim().slice(0, 60), chain: chain.join(' < '), host });
+          }
+
+          // Google 以外へ向くリンクの先頭。結果リンクがどこにあるかの手がかり。
+          const links = [];
+          for (const a of document.querySelectorAll('a[href]')) {
+            if (links.length >= 10) break;
+            let url;
+            try { url = new URL(a.href); } catch (e) { continue; }
+            if (!/^https?:$/.test(url.protocol) || /(^|\.)google\.(com|co\.jp)$/.test(url.host) || /^(accounts|policies|support)\./.test(url.host)) continue;
+            const chain = [];
+            let cur = a;
+            for (let i = 0; i < 4 && cur && cur !== document.body; i++) { chain.push(describe(cur)); cur = cur.parentElement; }
+            links.push({ host: url.host, text: (a.innerText || '').trim().slice(0, 50), chain: chain.join(' < ') });
+          }
+
+          const container = document.querySelector('#rso') || document.querySelector('#main') || document.querySelector('#search') || document.body;
+          // 結果コンテナの直下要素ごとに、どんな要素で、どこへのリンクと見出しを持つか。
+          const blocks = [];
+          for (const block of Array.from(container ? container.children : []).slice(0, 14)) {
+            let host = '';
+            for (const a of block.querySelectorAll('a[href]')) {
+              try { const u = new URL(a.href); if (/^https?:$/.test(u.protocol) && !/(^|\.)google\.(com|co\.jp)$/.test(u.host)) { host = u.host; break; } } catch (e) {}
+            }
+            const heading = block.querySelector('h3, [role=heading]');
+            blocks.push(describe(block) + ' | リンク=' + (block.querySelectorAll('a[href]').length) + ' 先頭host=' + (host || '-')
+              + ' | 見出し=' + (heading ? describe(heading) + ' ' + JSON.stringify((heading.innerText || '').trim().slice(0, 40)) : '-')
+              + ' | 属性=' + Array.from(block.attributes || []).map(at => at.name).filter(n => n !== 'class' && n !== 'id').slice(0, 6).join(','));
+          }
+          // HTML 抜粋は script / style / noscript / svg を除いてから切る（構造だけ見たい）。
+          let html = '';
+          if (htmlChars > 0 && container) {
+            const clone = container.cloneNode(true);
+            for (const el of clone.querySelectorAll('script, style, noscript, svg, template')) el.remove();
+            html = clone.outerHTML.replace(/\s+/g, ' ').slice(0, htmlChars);
+          }
+          return JSON.stringify({
+            url: location.href,
+            title: document.title || '',
+            readyState: document.readyState,
+            bodyLength: document.body ? document.body.innerText.length : -1,
+            htmlLength: document.documentElement ? document.documentElement.outerHTML.length : -1,
+            counts, outline, headings, links, blocks,
+            container: describe(container),
+            html,
+            text: (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').slice(0, 1200),
+          });
+        })("""
+        + json.dumps(probes)
+        + ", "
+        + str(serp_diag_html_chars())
+        + ")"
+    )
+    try:
+        raw = await tab.evaluate(script, return_by_value=True)
+        return json.loads(raw) if isinstance(raw, str) else {}
+    except Exception as caught:  # noqa: BLE001 - 診断で落とさない
+        return {"error": f"{type(caught).__name__}: {caught}"}
+
+
+def format_serp_diagnostics(info: dict[str, Any]) -> list[str]:
+    """serp_diagnostics の結果をログ向けの行にする。"""
+    if not info:
+        return ["（診断情報を取得できませんでした）"]
+    if "error" in info and len(info) == 1:
+        return [f"（診断に失敗: {info['error']}）"]
+    lines = [
+        f"URL   : {str(info.get('url') or '-')[:200]}",
+        f"title : {str(info.get('title') or '-')[:120]}",
+        f"state : {describe_page_state(info)} / 抜粋の基点={info.get('container') or '-'}",
+    ]
+    counts = info.get("counts") or {}
+    hits = [f"{sel}={n}" for sel, n in counts.items() if isinstance(n, int) and n > 0]
+    misses = [sel for sel, n in counts.items() if not (isinstance(n, int) and n > 0)]
+    lines.append(f"ヒット  : {', '.join(hits) or '（なし）'}")
+    lines.append(f"0 件    : {', '.join(misses) or '（なし）'}")
+    for entry in info.get("headings") or []:
+        lines.append(
+            f"見出し  : {entry.get('text') or '-'!r} host={entry.get('host') or '-'} / {entry.get('chain') or '-'}"
+        )
+    for entry in info.get("links") or []:
+        lines.append(f"リンク  : {entry.get('host') or '-'} {entry.get('text') or ''!r} / {entry.get('chain') or '-'}")
+    blocks = info.get("blocks") or []
+    if blocks:
+        lines.append(f"直下要素（{info.get('container') or '-'} の子）:")
+        lines.extend(f"  {row}" for row in blocks)
+    outline = info.get("outline") or []
+    if outline:
+        lines.append("構造    :")
+        lines.extend(f"  {row}" for row in outline)
+    text = info.get("text") or ""
+    if text:
+        lines.append(f"本文    : {text}")
+    html = info.get("html") or ""
+    if html:
+        lines.append(f"HTML   : {html}")
+    return lines
+
+
+def summarize_serp_hits(info: dict[str, Any]) -> str:
+    """runs の注記向けに、ヒットした探りセレクタだけを1行にする。"""
+    counts = (info or {}).get("counts") or {}
+    hits = [f"{sel}={n}" for sel, n in counts.items() if isinstance(n, int) and n > 0]
+    return ", ".join(hits[:12]) or "ヒットなし"
+
+
 # Google の同意画面で押すボタン。まず id / 属性、だめならテキストで探す。
 CONSENT_SELECTORS = (
     "#L2AGLb",
