@@ -220,6 +220,20 @@ runs の注記には、ヒットした探りセレクタだけを1行で残す�
 
 ### 帯域（SOAX の転送量）
 
+- **Yahoo! のナビゲーション方式**（`SAJI_YAHOO_NAV_MODE`、既定 `direct`）
+  - `direct`: 検索結果 URL（`search.yahoo.co.jp/search?p=<KW>&ei=UTF-8`）へ直接 goto する。
+    トップの取得・リロード・検索窓への手打ちが無く、1 run のページロードは 1 回。
+    地点指定は about:blank の時点で権限付与と override を済ませてから検索 URL を開く
+  - `searchbox`: 旧方式（トップ → 必ずリロード → 検索窓に人間速度でタイプ → Enter）。
+    コードは残してあり、`SAJI_YAHOO_NAV_MODE=searchbox` で即座に戻せる
+  - 結果のセレクタ・成否判定・セッション変更リトライ（1 回）はどちらの方式でも同じ。
+    Google は検索レシピ（検索窓経由）を変えないので常に `searchbox`
+- **リロードのキャッシュ利用**（`SAJI_RELOAD_USE_CACHE`、既定 `1`）: Google と Yahoo! の
+  searchbox 方式に残るリロードを `Page.reload ignoreCache=false` で行い、script / stylesheet を
+  取り直さない。`0` で従来の全再取得（nodriver 既定の `ignore_cache=True`）に戻る。
+  検索窓が見つからないときの同一セッション内リロードにも同じ設定が効く
+- **転送量ログの方式名**: 1 run ごとの「転送量: X.XX MB（方式: direct / ブロック: …）」と、
+  1 時間ごとの集計（`帯域 yahoo/direct: 平均 … MB/run`）に方式が付く。切替の前後で比べられる
 - **アセット遮断**: image / font / media を Fetch ドメインで abort する。
   - Yahoo!: `SAJI_BLOCK_ASSETS`（既定 `1` = 全3種をブロック。`0` で無効、`image,font` のように絞れる）
   - Google: `SAJI_BLOCK_ASSETS_GOOGLE`（既定 `0` = **ブロックしない**。共通設定には従わない）。
@@ -230,9 +244,17 @@ runs の注記には、ヒットした探りセレクタだけを1行で残す�
   結果の「転送量: X.XX MB（ブロック: on/off） / ページロード回数: N（リロード M / 再ナビ K /
   検索窓リトライ R）」に出す。セッション変更リトライは全試行の合計。1時間ごとの集計に
   platform 別の平均 MB/run と平均ページロード回数も出す（リロード頻度の判断材料）
-- 目安（ローカル・直結・ヘッドレス）: Yahoo! pc は遮断 on 5.9 MB / off 10.6 MB、
-  Google mobile は on 3.0 MB / off 6.6 MB。残りの大半は script / stylesheet で、
-  レシピの必須リロードが nodriver 既定の ignore_cache=True で全再取得になっている
+- 実測（2026-10-08、ローカル・直結・ヘッドレス・Chrome 154、3 キーワードの平均。遮断 on）:
+
+  | 経路 | direct | searchbox（リロードはキャッシュ利用） | searchbox（従来: 全再取得） |
+  | ---- | ------ | ------------------------------------ | --------------------------- |
+  | Yahoo! pc | **1.31 MB**（1.09〜1.69） | 3.75 MB | 5.92 MB |
+  | Yahoo! mobile | **1.80 MB**（1.74〜1.86） | 2.78 MB | 3.40 MB |
+  | Google pc（searchbox のみ） | - | 4.34 MB | 5.45 MB |
+
+  direct の結果件数は searchbox と同じ（pc 22 / 20 / 13 件、mobile 21 / 21 / 15〜16 件）。
+  従来（searchbox・全再取得）比で Yahoo! pc は約 78%、mobile は約 47% の削減。
+  残りの大半は script で、direct では document（結果ページ 1 回）とほぼ同じ構成になる
 
 ### Google は pc のみ計測
 

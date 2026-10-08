@@ -79,6 +79,8 @@ async def search(
     try:
         tab = await browser.get("about:blank")
         await dev.setup_request_interception(tab, proxy, platform=PLATFORM)
+        # Google は検索窓経由のレシピを変えない（方式名は転送量ログの前後比較用）。
+        dev.set_nav_mode(tab, dev.NAV_MODE_SEARCHBOX)
         await dev.apply_device_profile(tab, profile)
         # 同意画面回避と BOT シグナル削減。地点指定シーケンスより前に入れる
         # （地点指定の順序には影響しない）。

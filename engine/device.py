@@ -86,6 +86,42 @@ def describe_blocking(names: tuple[str, ...]) -> str:
 
 
 # --------------------------------------------------------------------------
+# ナビゲーション方式（Yahoo!）とリロードのキャッシュ利用
+# --------------------------------------------------------------------------
+#
+# Yahoo! は検索 URL へ直接 goto する direct が既定。トップ → リロード → 検索窓の
+# 旧方式（searchbox）は SAJI_YAHOO_NAV_MODE=searchbox で即座に戻せる。
+# Google は検索レシピ（検索窓経由）を変えないので常に searchbox。
+YAHOO_NAV_MODE_ENV = "SAJI_YAHOO_NAV_MODE"
+NAV_MODE_DIRECT = "direct"
+NAV_MODE_SEARCHBOX = "searchbox"
+NAV_MODES = (NAV_MODE_DIRECT, NAV_MODE_SEARCHBOX)
+
+
+def yahoo_nav_mode() -> str:
+    value = os.environ.get(YAHOO_NAV_MODE_ENV, "").strip().lower() or NAV_MODE_DIRECT
+    if value not in NAV_MODES:
+        print(f"  ! {YAHOO_NAV_MODE_ENV}={value!r} は未対応です（{NAV_MODE_DIRECT} を使います）")
+        return NAV_MODE_DIRECT
+    return value
+
+
+# リロード（Google と Yahoo! の searchbox 方式）でキャッシュを使うか。
+# nodriver の tab.reload() は既定 ignore_cache=True で、script / stylesheet を
+# 毎回取り直す（1 run の転送量の大半）。1（既定）でキャッシュを使う。
+# 0 で従来どおり無視する（切り戻し用）。
+RELOAD_USE_CACHE_ENV = "SAJI_RELOAD_USE_CACHE"
+
+
+def reload_use_cache() -> bool:
+    return _env_flag(RELOAD_USE_CACHE_ENV, "1")
+
+
+def describe_reload_mode() -> str:
+    return "キャッシュ利用" if reload_use_cache() else "キャッシュ無視（全再取得）"
+
+
+# --------------------------------------------------------------------------
 # 転送量とページロード回数の計測（帯域の実測）
 # --------------------------------------------------------------------------
 
@@ -99,6 +135,8 @@ class TransferMeter:
 
     def __init__(self, blocked: tuple[str, ...]) -> None:
         self.blocked = blocked
+        # ナビゲーション方式（direct / searchbox）。前後比較のため転送量と一緒に出す。
+        self.nav_mode = ""
         self.bytes_total = 0
         self.bytes_by_type: Counter[str] = Counter()
         self.requests = 0
@@ -120,6 +158,7 @@ class TransferMeter:
             "requests": self.requests,
             "blocked": dict(self.blocked_requests),
             "blocking": describe_blocking(self.blocked),
+            "nav_mode": self.nav_mode,
             "by_type": {name: round(size / (1024 * 1024), 3) for name, size in self.bytes_by_type.most_common(6)},
             "document_loads": self.document_loads,
             "reloads": self.reloads,
@@ -132,7 +171,7 @@ class TransferMeter:
         top = ", ".join(f"{name} {size:.2f}" for name, size in self.summary()["by_type"].items())
         blocked = ", ".join(f"{name} {count}" for name, count in sorted(self.blocked_requests.items()))
         return (
-            f"転送量: {self.megabytes:.2f} MB（ブロック: {describe_blocking(self.blocked)}）"
+            f"転送量: {self.megabytes:.2f} MB（方式: {self.nav_mode or '-'} / ブロック: {describe_blocking(self.blocked)}）"
             f" 受信 {self.requests} 件 [{top or '-'}]"
             f" ブロック {sum(self.blocked_requests.values())} 件[{blocked or '-'}] / "
             f"ページロード回数: {self.document_loads}"
@@ -148,6 +187,13 @@ def meter_for(tab) -> Optional[TransferMeter]:
 
 # 直近に閉じた Chrome の計測結果。runner が outcome に載せて表示・集計に使う。
 _last_transfer: Optional[dict[str, Any]] = None
+
+
+def set_nav_mode(tab, nav_mode: str) -> None:
+    """この実行のナビゲーション方式を転送量の計測に記録する（ログの前後比較用）。"""
+    meter = meter_for(tab)
+    if meter is not None:
+        meter.nav_mode = nav_mode
 
 
 def take_last_transfer() -> Optional[dict[str, Any]]:
@@ -284,6 +330,8 @@ ENV_KEYS_OF_INTEREST: tuple[str, ...] = (
     "SAJI_BLOCK_ASSETS",
     "SAJI_BLOCK_ASSETS_GOOGLE",
     "SAJI_GOOGLE_ALLOW_MOBILE",
+    "SAJI_YAHOO_NAV_MODE",
+    "SAJI_RELOAD_USE_CACHE",
 )
 
 
@@ -790,11 +838,15 @@ class SearchOutcome:
     renavigations: int = 0
     searchbox_reloads: int = 0
     blocking: str = ""
+    # ナビゲーション方式（Yahoo!: direct / searchbox、Google: searchbox）。
+    nav_mode: str = ""
 
     def add_transfer(self, summary: Optional[dict[str, Any]]) -> None:
         """1試行ぶんの計測を足し込む（セッション変更リトライで複数回呼ばれる）。"""
         if not summary:
             return
+        if not self.nav_mode:
+            self.nav_mode = str(summary.get("nav_mode") or "")
         self.transfer_mb += float(summary.get("mb", 0.0))
         self.page_loads += int(summary.get("document_loads", 0))
         self.reloads += int(summary.get("reloads", 0))
@@ -1861,12 +1913,17 @@ async def reload_with_retry(tab, url: str) -> None:
 
     ProtocolException（-32000 系）が出たら 1〜2 秒待って最大 RELOAD_ATTEMPTS 回
     やり直し、それでもだめなら同じ URL への tab.get() で代替する。
+
+    リロードは既定でキャッシュを使う（Page.reload ignoreCache=false）。script /
+    stylesheet を取り直さないぶん転送量が減る。SAJI_RELOAD_USE_CACHE=0 で従来の
+    全再取得に戻る。
     """
     last: Optional[BaseException] = None
     meter = meter_for(tab)
+    ignore_cache = not reload_use_cache()
     for attempt in range(1, RELOAD_ATTEMPTS + 1):
         try:
-            await tab.reload()
+            await tab.reload(ignore_cache=ignore_cache)
             if meter is not None:
                 meter.reloads += 1
             if attempt > 1:

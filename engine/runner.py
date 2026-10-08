@@ -141,6 +141,7 @@ def _run_google_with_retries(kwargs: dict, *, keyword: str, use_proxy: bool, all
         outcome = asyncio.run(_search(**kwargs))
         outcome.add_transfer(
             {
+                "nav_mode": previous.nav_mode,
                 "mb": previous.transfer_mb,
                 "document_loads": previous.page_loads,
                 "reloads": previous.reloads,
@@ -368,6 +369,7 @@ def run_search(
     retry.attempts = 2
     retry.add_transfer(
         {
+            "nav_mode": outcome.nav_mode,
             "mb": outcome.transfer_mb,
             "document_loads": outcome.page_loads,
             "reloads": outcome.reloads,
@@ -433,7 +435,7 @@ def print_outcome(outcome: dev.SearchOutcome, *, indent: str = "  ") -> None:
     if outcome.status != "ok":
         print(f"{indent}最終段階   : {dev.last_stage()}")
     print(
-        f"{indent}転送量     : {outcome.transfer_mb:.2f} MB（ブロック: {outcome.blocking or '-'}"
+        f"{indent}転送量     : {outcome.transfer_mb:.2f} MB（方式: {outcome.nav_mode or '-'} / ブロック: {outcome.blocking or '-'}"
         f"{'、' + str(outcome.attempts) + ' 試行の合計' if outcome.attempts > 1 else ''}）"
         f" / ページロード回数: {outcome.page_loads}"
         f"（リロード {outcome.reloads} / 再ナビ {outcome.renavigations} / 検索窓リトライ {outcome.searchbox_reloads}）"

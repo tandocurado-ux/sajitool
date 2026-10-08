@@ -303,7 +303,8 @@ class Scheduler:
         self.lanes: dict[str, Lane] = {name: Lane(name) for name in LANE_ORDER}
         # 直前に実行した platform。次はこれ以外のレーンを優先する（ラウンドロビン）。
         self.last_platform: Optional[str] = None
-        # 帯域の実測（直近1時間の集計用）: (時刻, platform, MB, ページロード, リロード, 再ナビ, 検索窓リトライ)
+        # 帯域の実測（直近1時間の集計用）:
+        # (時刻, "platform/方式", MB, ページロード, リロード, 再ナビ, 検索窓リトライ)
         self.transfer_samples: list[tuple[datetime, str, float, int, int, int, int]] = []
         self.history: list[alerts.ExecutionRecord] = []
         self.consecutive_errors: dict[str, int] = {}
@@ -681,7 +682,7 @@ class Scheduler:
         self.transfer_samples.append(
             (
                 run_at,
-                job.target.platform,
+                f"{job.target.platform}/{outcome.nav_mode or '-'}",
                 outcome.transfer_mb,
                 outcome.page_loads,
                 outcome.reloads,
@@ -839,6 +840,7 @@ class Scheduler:
         self.transfer_samples = [s for s in self.transfer_samples if s[0] >= now - timedelta(hours=HISTORY_HOURS)]
         if not recent:
             return
+        # platform と方式（direct / searchbox）ごとに出す。切替の前後で比べられるように。
         by_platform: dict[str, list[tuple[datetime, str, float, int, int, int, int]]] = {}
         for sample in recent:
             by_platform.setdefault(sample[1], []).append(sample)
@@ -975,6 +977,10 @@ class Scheduler:
             f"  アセット遮断: Yahoo! {dev.describe_blocking(dev.blocked_assets_for('yahoo'))}"
             f" / Google {dev.describe_blocking(dev.blocked_assets_for('google'))}"
             f"（{dev.BLOCK_ASSETS_ENV} / {dev.BLOCK_ASSETS_GOOGLE_ENV}）"
+        )
+        print(
+            f"  Yahoo!方式 : {dev.yahoo_nav_mode()}（{dev.YAHOO_NAV_MODE_ENV}。direct=検索 URL へ直接 / searchbox=トップ経由）"
+            f" / リロード: {dev.describe_reload_mode()}（{dev.RELOAD_USE_CACHE_ENV}）"
         )
         print(
             f"  プロキシ認証: Google {dev.proxy_auth_mode('google')}"
